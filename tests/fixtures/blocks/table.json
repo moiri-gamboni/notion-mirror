@@ -1,0 +1,142 @@
+{
+ "provenance": "synthetic — a two-column table with a header row and annotated cells",
+ "blocks": [
+  {
+   "id": "e8000000000000000000000000000000",
+   "type": "table",
+   "has_children": true,
+   "table": {
+    "table_width": 2,
+    "has_column_header": true,
+    "has_row_header": false
+   }
+  }
+ ],
+ "children": {
+  "e8000000000000000000000000000000": [
+   {
+    "id": "e9000000000000000000000000000000",
+    "type": "table_row",
+    "has_children": false,
+    "table_row": {
+     "cells": [
+      [
+       {
+        "type": "text",
+        "plain_text": "Verdict",
+        "annotations": {}
+       }
+      ],
+      [
+       {
+        "type": "text",
+        "plain_text": "Meaning",
+        "annotations": {}
+       }
+      ]
+     ]
+    }
+   },
+   {
+    "id": "f1000000000000000000000000000000",
+    "type": "table_row",
+    "has_children": false,
+    "table_row": {
+     "cells": [
+      [
+       {
+        "type": "text",
+        "plain_text": "ADMIT",
+        "annotations": {
+         "bold": true
+        }
+       }
+      ],
+      [
+       {
+        "type": "text",
+        "plain_text": "Usable. Goes into the dataset.",
+        "annotations": {}
+       }
+      ]
+     ]
+    }
+   },
+   {
+    "id": "f2000000000000000000000000000000",
+    "type": "table_row",
+    "has_children": false,
+    "table_row": {
+     "cells": [
+      [
+       {
+        "type": "text",
+        "plain_text": "FLAG",
+        "annotations": {
+         "bold": true
+        }
+       }
+      ],
+      [
+       {
+        "type": "text",
+        "plain_text": "Usable, but the loss plausibly invalidates the row's ",
+        "annotations": {}
+       },
+       {
+        "type": "text",
+        "plain_text": "purpose",
+        "annotations": {
+         "italic": true
+        }
+       },
+       {
+        "type": "text",
+        "plain_text": ". Review before use.",
+        "annotations": {}
+       }
+      ]
+     ]
+    }
+   },
+   {
+    "id": "f3000000000000000000000000000000",
+    "type": "table_row",
+    "has_children": false,
+    "table_row": {
+     "cells": [
+      [
+       {
+        "type": "text",
+        "plain_text": "DISCARD",
+        "annotations": {
+         "bold": true
+        }
+       }
+      ],
+      [
+       {
+        "type": "text",
+        "plain_text": "Dropped, ",
+        "annotations": {}
+       },
+       {
+        "type": "text",
+        "plain_text": "but an artifact exists",
+        "annotations": {
+         "bold": true
+        }
+       },
+       {
+        "type": "text",
+        "plain_text": " and could be salvaged later.",
+        "annotations": {}
+       }
+      ]
+     ]
+    }
+   }
+  ]
+ },
+ "name": "table"
+}

@@ -1,0 +1,20 @@
+{
+ "provenance": "synthetic — one bullet, no children",
+ "blocks": [
+  {
+   "id": "d9000000000000000000000000000000",
+   "type": "bulleted_list_item",
+   "has_children": false,
+   "bulleted_list_item": {
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "the output file could not be written (I/O issue)",
+      "annotations": {}
+     }
+    ]
+   }
+  }
+ ],
+ "name": "bulleted_list_item"
+}

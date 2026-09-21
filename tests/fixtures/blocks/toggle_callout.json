@@ -1,0 +1,92 @@
+{
+ "provenance": "synthetic — toggle and callout, both with children (callout children stay quoted)",
+ "blocks": [
+  {
+   "id": "b1000000000000000000000000000000",
+   "type": "toggle",
+   "has_children": true,
+   "toggle": {
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "Details",
+      "annotations": {}
+     }
+    ]
+   }
+  },
+  {
+   "id": "b2000000000000000000000000000000",
+   "type": "callout",
+   "has_children": true,
+   "callout": {
+    "icon": {
+     "type": "emoji",
+     "emoji": "💡"
+    },
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "Worth knowing",
+      "annotations": {}
+     }
+    ]
+   }
+  },
+  {
+   "id": "b3000000000000000000000000000000",
+   "type": "callout",
+   "has_children": false,
+   "callout": {
+    "icon": {
+     "type": "external",
+     "external": {
+      "url": "https://example.org/i.png"
+     }
+    },
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "no emoji icon",
+      "annotations": {}
+     }
+    ]
+   }
+  }
+ ],
+ "children": {
+  "b1000000000000000000000000000000": [
+   {
+    "id": "b4000000000000000000000000000000",
+    "type": "paragraph",
+    "has_children": false,
+    "paragraph": {
+     "rich_text": [
+      {
+       "type": "text",
+       "plain_text": "hidden until opened",
+       "annotations": {}
+      }
+     ]
+    }
+   }
+  ],
+  "b2000000000000000000000000000000": [
+   {
+    "id": "b5000000000000000000000000000000",
+    "type": "bulleted_list_item",
+    "has_children": false,
+    "bulleted_list_item": {
+     "rich_text": [
+      {
+       "type": "text",
+       "plain_text": "inside the callout",
+       "annotations": {}
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "name": "toggle_callout"
+}

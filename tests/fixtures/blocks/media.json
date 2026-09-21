@@ -1,0 +1,125 @@
+{
+ "provenance": "synthetic — Notion-hosted files become ATTACH: placeholders, external keep their URL",
+ "blocks": [
+  {
+   "id": "8a000000000000000000000000000000",
+   "type": "image",
+   "has_children": false,
+   "image": {
+    "type": "file",
+    "file": {
+     "url": "https://prod-files-secure.s3.us-west-2.amazonaws.com/x/y/diagram.png"
+    },
+    "caption": [
+     {
+      "type": "text",
+      "plain_text": "architecture",
+      "annotations": {}
+     }
+    ]
+   }
+  },
+  {
+   "id": "8b000000000000000000000000000000",
+   "type": "image",
+   "has_children": false,
+   "image": {
+    "type": "external",
+    "external": {
+     "url": "https://example.org/logo.png"
+    },
+    "caption": []
+   }
+  },
+  {
+   "id": "8c000000000000000000000000000000",
+   "type": "pdf",
+   "has_children": false,
+   "pdf": {
+    "type": "file",
+    "file": {
+     "url": "https://prod-files-secure.s3.us-west-2.amazonaws.com/x/y/paper.pdf"
+    },
+    "caption": []
+   }
+  },
+  {
+   "id": "8d000000000000000000000000000000",
+   "type": "video",
+   "has_children": false,
+   "video": {
+    "type": "external",
+    "external": {
+     "url": "https://youtu.be/abc"
+    },
+    "caption": []
+   }
+  },
+  {
+   "id": "8e000000000000000000000000000000",
+   "type": "audio",
+   "has_children": false,
+   "audio": {
+    "type": "external",
+    "external": {
+     "url": "https://example.org/a.mp3"
+    },
+    "caption": []
+   }
+  },
+  {
+   "id": "8f000000000000000000000000000000",
+   "type": "file",
+   "has_children": false,
+   "file": {
+    "type": "external",
+    "external": {
+     "url": "https://example.org/sheet.csv"
+    },
+    "caption": [
+     {
+      "type": "text",
+      "plain_text": "the export",
+      "annotations": {}
+     }
+    ]
+   }
+  },
+  {
+   "id": "9a000000000000000000000000000000",
+   "type": "bookmark",
+   "has_children": false,
+   "bookmark": {
+    "url": "https://example.org/post",
+    "caption": [
+     {
+      "type": "text",
+      "plain_text": "the write-up",
+      "annotations": {}
+     }
+    ]
+   }
+  },
+  {
+   "id": "9b000000000000000000000000000000",
+   "type": "embed",
+   "has_children": false,
+   "embed": {
+    "url": "https://example.org/embed"
+   }
+  },
+  {
+   "id": "9c000000000000000000000000000000",
+   "type": "link_preview",
+   "has_children": false,
+   "link_preview": {
+    "url": "https://github.com/org/repo/pull/1"
+   }
+  }
+ ],
+ "covers": [
+  "audio",
+  "link_preview"
+ ],
+ "name": "media"
+}

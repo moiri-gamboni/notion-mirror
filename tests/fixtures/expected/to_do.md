@@ -1,0 +1,2 @@
+- [ ] Publish the draft page to **staging** (NOT PRODUCTION)
+- [x] a checked one

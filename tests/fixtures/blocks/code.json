@@ -1,0 +1,22 @@
+{
+ "provenance": "synthetic — a fenced block with a language and multi-line content",
+ "blocks": [
+  {
+   "id": "e7000000000000000000000000000000",
+   "type": "code",
+   "has_children": false,
+   "code": {
+    "caption": [],
+    "language": "diff",
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "--- Old\n+++ New\n@@ -316 +316 @@\n-[2024-06-07 09:26]",
+      "annotations": {}
+     }
+    ]
+   }
+  }
+ ],
+ "name": "code"
+}

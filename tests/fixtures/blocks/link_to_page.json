@@ -1,0 +1,33 @@
+{
+ "provenance": "synthetic — all three link_to_page shapes",
+ "blocks": [
+  {
+   "id": "5a000000000000000000000000000000",
+   "type": "link_to_page",
+   "has_children": false,
+   "link_to_page": {
+    "type": "page_id",
+    "page_id": "5d000000-0000-0000-0000-000000000000"
+   }
+  },
+  {
+   "id": "5b000000000000000000000000000000",
+   "type": "link_to_page",
+   "has_children": false,
+   "link_to_page": {
+    "type": "database_id",
+    "database_id": "5e000000-0000-0000-0000-000000000000"
+   }
+  },
+  {
+   "id": "5c000000000000000000000000000000",
+   "type": "link_to_page",
+   "has_children": false,
+   "link_to_page": {
+    "type": "comment_id",
+    "comment_id": "5f000000-0000-0000-0000-000000000000"
+   }
+  }
+ ],
+ "name": "link_to_page"
+}

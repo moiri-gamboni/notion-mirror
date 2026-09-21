@@ -1,0 +1,21 @@
+{
+ "provenance": "synthetic — a plain second-level heading",
+ "blocks": [
+  {
+   "id": "d7000000000000000000000000000000",
+   "type": "heading_2",
+   "has_children": false,
+   "heading_2": {
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "Changes (Part 1):",
+      "annotations": {}
+     }
+    ],
+    "is_toggleable": false
+   }
+  }
+ ],
+ "name": "heading_2"
+}

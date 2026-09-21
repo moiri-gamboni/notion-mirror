@@ -1,0 +1,29 @@
+{
+ "provenance": "synthetic — an empty paragraph (a blank line) and a plain one",
+ "blocks": [
+  {
+   "id": "d1000000000000000000000000000000",
+   "type": "paragraph",
+   "has_children": false,
+   "paragraph": {
+    "rich_text": [],
+    "color": "default"
+   }
+  },
+  {
+   "id": "d2000000000000000000000000000000",
+   "type": "paragraph",
+   "has_children": false,
+   "paragraph": {
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "One plain sentence.",
+      "annotations": {}
+     }
+    ]
+   }
+  }
+ ],
+ "name": "paragraph"
+}

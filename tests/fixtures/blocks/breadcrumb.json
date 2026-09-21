@@ -1,0 +1,23 @@
+{
+ "provenance": "synthetic — breadcrumb renders nothing at all",
+ "blocks": [
+  {
+   "id": "7a000000000000000000000000000000",
+   "type": "breadcrumb",
+   "has_children": false,
+   "breadcrumb": {}
+  },
+  {
+   "id": "7b000000000000000000000000000000",
+   "type": "table_of_contents",
+   "has_children": false,
+   "table_of_contents": {
+    "color": "default"
+   }
+  }
+ ],
+ "covers": [
+  "table_of_contents"
+ ],
+ "name": "breadcrumb"
+}

@@ -1,0 +1,52 @@
+{
+ "provenance": "synthetic — a numbered item with two numbered children",
+ "blocks": [
+  {
+   "id": "e1000000000000000000000000000000",
+   "type": "numbered_list_item",
+   "has_children": true,
+   "numbered_list_item": {
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "First, translate the source to an intermediate form",
+      "annotations": {}
+     }
+    ]
+   }
+  }
+ ],
+ "children": {
+  "e1000000000000000000000000000000": [
+   {
+    "id": "e2000000000000000000000000000000",
+    "type": "numbered_list_item",
+    "has_children": false,
+    "numbered_list_item": {
+     "rich_text": [
+      {
+       "type": "text",
+       "plain_text": "parse and compile it with the toolchain",
+       "annotations": {}
+      }
+     ]
+    }
+   },
+   {
+    "id": "e3000000000000000000000000000000",
+    "type": "numbered_list_item",
+    "has_children": false,
+    "numbered_list_item": {
+     "rich_text": [
+      {
+       "type": "text",
+       "plain_text": "then lower it to the target language",
+       "annotations": {}
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "name": "numbered_list_item"
+}

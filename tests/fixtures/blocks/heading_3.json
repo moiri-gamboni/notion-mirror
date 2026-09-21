@@ -1,0 +1,28 @@
+{
+ "provenance": "synthetic — a third-level heading opening with a code span",
+ "blocks": [
+  {
+   "id": "d8000000000000000000000000000000",
+   "type": "heading_3",
+   "has_children": false,
+   "heading_3": {
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "has_errors: true",
+      "annotations": {
+       "code": true
+      }
+     },
+     {
+      "type": "text",
+      "plain_text": " with nothing attributable",
+      "annotations": {}
+     }
+    ],
+    "is_toggleable": false
+   }
+  }
+ ],
+ "name": "heading_3"
+}

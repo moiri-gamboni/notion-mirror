@@ -1,0 +1,12 @@
+{
+ "provenance": "synthetic — a divider",
+ "blocks": [
+  {
+   "id": "e6000000000000000000000000000000",
+   "type": "divider",
+   "has_children": false,
+   "divider": {}
+  }
+ ],
+ "name": "divider"
+}

@@ -1,0 +1,59 @@
+{
+ "provenance": "synthetic — a reference synced_block walks the ORIGINAL block's children",
+ "blocks": [
+  {
+   "id": "2a000000000000000000000000000000",
+   "type": "synced_block",
+   "has_children": true,
+   "synced_block": {
+    "synced_from": {
+     "type": "block_id",
+     "block_id": "2b000000000000000000000000000000"
+    }
+   }
+  },
+  {
+   "id": "2c000000000000000000000000000000",
+   "type": "synced_block",
+   "has_children": true,
+   "synced_block": {
+    "synced_from": null
+   }
+  }
+ ],
+ "children": {
+  "2b000000000000000000000000000000": [
+   {
+    "id": "2d000000000000000000000000000000",
+    "type": "paragraph",
+    "has_children": false,
+    "paragraph": {
+     "rich_text": [
+      {
+       "type": "text",
+       "plain_text": "content of the original",
+       "annotations": {}
+      }
+     ]
+    }
+   }
+  ],
+  "2c000000000000000000000000000000": [
+   {
+    "id": "2e000000000000000000000000000000",
+    "type": "paragraph",
+    "has_children": false,
+    "paragraph": {
+     "rich_text": [
+      {
+       "type": "text",
+       "plain_text": "content of an original block",
+       "annotations": {}
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "name": "synced_block"
+}

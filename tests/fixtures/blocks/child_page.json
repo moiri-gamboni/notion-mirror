@@ -1,0 +1,33 @@
+{
+ "provenance": "synthetic — a sub-page stand-in; its children are never walked",
+ "blocks": [
+  {
+   "id": "f4000000000000000000000000000000",
+   "type": "child_page",
+   "has_children": true,
+   "child_page": {
+    "title": "Diagnosis Flow"
+   }
+  }
+ ],
+ "children": {
+  "f4000000000000000000000000000000": [
+   {
+    "id": "f5000000000000000000000000000000",
+    "type": "heading_1",
+    "has_children": false,
+    "heading_1": {
+     "rich_text": [
+      {
+       "type": "text",
+       "plain_text": "Diagnosing a row",
+       "annotations": {}
+      }
+     ],
+     "is_toggleable": false
+    }
+   }
+  ]
+ },
+ "name": "child_page"
+}

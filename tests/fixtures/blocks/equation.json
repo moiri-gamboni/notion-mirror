@@ -1,0 +1,22 @@
+{
+ "provenance": "synthetic — block equation, single- and multi-line expressions",
+ "blocks": [
+  {
+   "id": "4a000000000000000000000000000000",
+   "type": "equation",
+   "has_children": false,
+   "equation": {
+    "expression": "a^2 + b^2 = c^2"
+   }
+  },
+  {
+   "id": "4b000000000000000000000000000000",
+   "type": "equation",
+   "has_children": false,
+   "equation": {
+    "expression": "\\begin{aligned}\nx &= 1\\\\\ny &= 2\n\\end{aligned}"
+   }
+  }
+ ],
+ "name": "equation"
+}

@@ -1,0 +1,60 @@
+{
+ "provenance": "synthetic — column_list/column emit nothing themselves; children walk flat",
+ "blocks": [
+  {
+   "id": "3a000000000000000000000000000000",
+   "type": "column_list",
+   "has_children": true,
+   "column_list": {}
+  }
+ ],
+ "children": {
+  "3a000000000000000000000000000000": [
+   {
+    "id": "3b000000000000000000000000000000",
+    "type": "column",
+    "has_children": true,
+    "column": {}
+   },
+   {
+    "id": "3c000000000000000000000000000000",
+    "type": "column",
+    "has_children": true,
+    "column": {}
+   }
+  ],
+  "3b000000000000000000000000000000": [
+   {
+    "id": "3d000000000000000000000000000000",
+    "type": "paragraph",
+    "has_children": false,
+    "paragraph": {
+     "rich_text": [
+      {
+       "type": "text",
+       "plain_text": "left",
+       "annotations": {}
+      }
+     ]
+    }
+   }
+  ],
+  "3c000000000000000000000000000000": [
+   {
+    "id": "3e000000000000000000000000000000",
+    "type": "paragraph",
+    "has_children": false,
+    "paragraph": {
+     "rich_text": [
+      {
+       "type": "text",
+       "plain_text": "right",
+       "annotations": {}
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "name": "column_list"
+}

@@ -1,0 +1,48 @@
+{
+ "provenance": "synthetic — an unchecked item with a bold run, and a checked one",
+ "blocks": [
+  {
+   "id": "e4000000000000000000000000000000",
+   "type": "to_do",
+   "has_children": false,
+   "to_do": {
+    "checked": false,
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "Publish the draft page to ",
+      "annotations": {}
+     },
+     {
+      "type": "text",
+      "plain_text": "staging ",
+      "annotations": {
+       "bold": true
+      }
+     },
+     {
+      "type": "text",
+      "plain_text": "(NOT PRODUCTION)",
+      "annotations": {}
+     }
+    ]
+   }
+  },
+  {
+   "id": "e5000000000000000000000000000000",
+   "type": "to_do",
+   "has_children": false,
+   "to_do": {
+    "checked": true,
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "a checked one",
+      "annotations": {}
+     }
+    ]
+   }
+  }
+ ],
+ "name": "to_do"
+}

@@ -1,0 +1,31 @@
+{
+ "provenance": "synthetic — no such block type exists; pins the fallback branch",
+ "blocks": [
+  {
+   "id": "00000000000000000000000000000000",
+   "type": "ai_block",
+   "has_children": false,
+   "ai_block": {
+    "rich_text": []
+   }
+  },
+  {
+   "id": "11111111111111111111111111111111",
+   "type": "unsupported_with_text",
+   "has_children": false,
+   "unsupported_with_text": {
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "text the fallback still renders",
+      "annotations": {}
+     }
+    ]
+   }
+  }
+ ],
+ "covers": [
+  "ai_block"
+ ],
+ "name": "unknown"
+}

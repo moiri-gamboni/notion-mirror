@@ -1,0 +1,99 @@
+{
+ "provenance": "synthetic — the rich_md annotation matrix in one block",
+ "blocks": [
+  {
+   "id": "22222222222222222222222222222222",
+   "type": "paragraph",
+   "has_children": false,
+   "paragraph": {
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "plain ",
+      "annotations": {}
+     },
+     {
+      "type": "text",
+      "plain_text": "bold",
+      "annotations": {
+       "bold": true
+      }
+     },
+     {
+      "type": "text",
+      "plain_text": " ital ",
+      "annotations": {
+       "italic": true
+      }
+     },
+     {
+      "type": "text",
+      "plain_text": "code",
+      "annotations": {
+       "code": true
+      }
+     },
+     {
+      "type": "text",
+      "plain_text": " struck ",
+      "annotations": {
+       "strikethrough": true
+      }
+     },
+     {
+      "type": "text",
+      "plain_text": "under",
+      "annotations": {
+       "underline": true
+      }
+     },
+     {
+      "type": "text",
+      "plain_text": " link",
+      "annotations": {},
+      "href": "https://example.org/x"
+     },
+     {
+      "type": "equation",
+      "plain_text": "e^{i\\pi}",
+      "equation": {
+       "expression": "e^{i\\pi}"
+      },
+      "annotations": {}
+     },
+     {
+      "type": "text",
+      "plain_text": " **bold+ital** ",
+      "annotations": {
+       "bold": true,
+       "italic": true
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "33333333333333333333333333333333",
+   "type": "paragraph",
+   "has_children": false,
+   "paragraph": {
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "first line\nsecond line\nthird",
+      "annotations": {}
+     }
+    ]
+   }
+  },
+  {
+   "id": "44444444444444444444444444444444",
+   "type": "paragraph",
+   "has_children": false,
+   "paragraph": {
+    "rich_text": []
+   }
+  }
+ ],
+ "name": "paragraph_rich"
+}

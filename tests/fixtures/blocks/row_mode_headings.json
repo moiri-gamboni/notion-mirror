@@ -1,0 +1,39 @@
+{
+ "provenance": "synthetic — a heading sits at its own depth and its children go one level deeper. Kept under its original name: it was a `row_mode` fixture until 2026-08-27, when the flat content-page spelling it contrasted with turned out to be a bug and both modes became one.",
+ "indent": 0,
+ "blocks": [
+  {
+   "id": "1a000000000000000000000000000000",
+   "type": "heading_2",
+   "has_children": true,
+   "heading_2": {
+    "rich_text": [
+     {
+      "type": "text",
+      "plain_text": "Section",
+      "annotations": {}
+     }
+    ]
+   }
+  }
+ ],
+ "children": {
+  "1a000000000000000000000000000000": [
+   {
+    "id": "1b000000000000000000000000000000",
+    "type": "paragraph",
+    "has_children": false,
+    "paragraph": {
+     "rich_text": [
+      {
+       "type": "text",
+       "plain_text": "under the heading",
+       "annotations": {}
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "name": "row_mode_headings"
+}
