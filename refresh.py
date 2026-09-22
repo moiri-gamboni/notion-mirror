@@ -546,7 +546,9 @@ def query_db_rows(api, db_id):
     by created_time, so a big DB's overflow rows can no longer be mistaken for
     deletions (which is how ~630 live rows of a signups feed got tombstoned in
     Aug 2026). An unwindowable truncation raises Truncated instead of returning
-    a short set."""
+    a short set, and so does a multi-source database that lists no data source
+    to query: the empty row set that produced would diff every live row of it
+    as deleted, which is the same failure by a different road."""
     try:
         return api.query_rows(f"/databases/{dashed(db_id)}/query"), None
     except ApiError as e:
@@ -554,6 +556,10 @@ def query_db_rows(api, db_id):
             d = api.get(f"/databases/{dashed(db_id)}", ver=VER_DS)
             rows = []
             srcs = d.get("data_sources") or []
+            if not srcs:
+                # the report line this lands in is itself truncated at 200 chars
+                raise Truncated(f"/databases/{db_id}: refused as multi-source, then the "
+                                "2025-09-03 fetch listed no data source to query")
             for s in srcs:
                 rows.extend(api.query_rows(f"/data_sources/{s['id']}/query", ver=VER_DS))
             return rows, {"data_sources": srcs, "database": d}

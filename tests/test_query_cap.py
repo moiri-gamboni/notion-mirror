@@ -188,6 +188,40 @@ class RefreshDbTruncatedTest(MirrorTestCase):
         self.assertEqual(len(rows_after), 10)
 
 
+class EmptyDataSourceListTest(MirrorTestCase):
+    """The other road to an empty row set. `query_db_rows`'s multi-source
+    fallback read `srcs = d.get("data_sources") or []` and looped: a database
+    that refused the 2022-06-28 query for having several data sources, and then
+    came back from the 2025-09-03 fetch listing none, queried nothing and
+    returned zero rows — which `refresh_db` would diff as "every row deleted"
+    and act on, removing the CSV rows and every row .md. Same tombstoning as the
+    query cap, reached without a single truncated response."""
+
+    def test_no_data_sources_to_query_is_truncated_not_an_empty_row_set(self):
+        rids = ["%032x" % i for i in range(3)]
+        self.write_csv([[r, f"Row {i}", "old"] for i, r in enumerate(rids)])
+        for i, r in enumerate(rids):
+            self.seed_row(r, title=f"Row {i}")
+
+        fake = types.SimpleNamespace(
+            query_rows=mock.Mock(side_effect=api_mod.ApiError(
+                400, "Your integration must specify a data source to query")),
+            get=mock.Mock(return_value={"object": "database", "data_sources": []}),
+            n=0)
+        self.state_dict.setdefault("db404", {})
+        refresh.refresh_db(fake, None, self.DB_ID, self.dirname, self.state_dict,
+                           self.report, self.args, set())
+
+        _header, rows_after = refresh.read_csv(self.csv_path)
+        self.assertEqual(len(rows_after), 3, "no CSV rows may be dropped")
+        for i, r in enumerate(rids):
+            self.assertTrue(os.path.exists(os.path.join(self.dirpath, f"Row {i} {r}.md")),
+                            f"row {r} was tombstoned on an empty data-source list")
+        errors = self.report["dbs"]["errors"]
+        self.assertTrue(any("listed no data source" in e["error"] for e in errors), errors)
+        self.assertTrue(any("nothing diffed as deleted" in e["error"] for e in errors), errors)
+
+
 if __name__ == "__main__":
     unittest.main()
 

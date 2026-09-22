@@ -37,8 +37,10 @@ QUERY_CAP = 10_000
 
 
 class Truncated(ApiError):
-    """A row query hit Notion's per-query result cap and created_time windowing
-    could not recover the remainder. Raised instead of returning a silently short
+    """A row sweep could not produce the database's whole row set: a query hit
+    Notion's per-query result cap and created_time windowing could not recover
+    the remainder, or (in `refresh.query_db_rows`) a multi-source database
+    listed no data source to query. Raised instead of returning a silently short
     set because callers diff missing rows as deletions. Subclasses ApiError so
     every existing report-and-skip handler covers it."""
 
