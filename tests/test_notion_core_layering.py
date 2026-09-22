@@ -18,8 +18,10 @@ inside a function would never fire in a test that only imports the package.
 import ast
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 CORE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "notion_core")
@@ -109,6 +111,12 @@ class TestAutomationSubtreesComeFromConfig(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k != "NOTION_MIRROR_AUTOMATION_SUBTREES"}
         if value is not None:
             env["NOTION_MIRROR_AUTOMATION_SUBTREES"] = value
+        # The reader falls back to ~/.config/notion-mirror/env and its env.d/ when the
+        # variable is unset, so a machine that deploys the key there would otherwise
+        # answer for the "unset" case and this would test the box, not the code.
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        env["HOME"] = home
         done = subprocess.run(
             [sys.executable, "-c",
              f"import sys, json; sys.path.insert(0, {ENGINE!r}); import refresh;"

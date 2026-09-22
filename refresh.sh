@@ -336,6 +336,15 @@ the replacement note.")"
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
         send_note_ntfy "$NOTE" "$SUMMARY" "$REL"
+        # The run that wrote the stub may have deferred its digest. That queued
+        # entry points at the note just replaced and just sent, so leaving it
+        # would send the same digest a second time at the next `notify`, against
+        # a summary the note no longer matches.
+        PENDING="$STATE/pending-ntfy.tsv"
+        if [ -f "$PENDING" ] && [ "$(cut -f1 "$PENDING")" = "$NOTE" ]; then
+            rm -f "$PENDING"
+            say "dropped the deferred digest for this note (sent above)"
+        fi
         say "reanalysis committed + digest sent"
         exit 0
     fi

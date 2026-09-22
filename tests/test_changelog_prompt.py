@@ -213,5 +213,42 @@ class ReanalyzeCallSite(Sandbox):
         self.assertIn("Reader context", p)
 
 
+class ReanalyzeAndTheDeferredDigest(Sandbox):
+    """A run started with NOTION_REFRESH_DEFER_NTFY leaves its digest queued for the
+    next `notify`. When that run's note was a stub and `reanalyze` replaces it, the
+    reanalysis sends the digest itself — so the queued entry for the same note has
+    already been delivered, and sending it again is a duplicate of a note that no
+    longer says what the queue recorded."""
+
+    def pending(self):
+        return os.path.join(self.ndir, "_meta", "state", "pending-ntfy.tsv")
+
+    def queue(self, note):
+        with open(self.pending(), "w") as f:
+            f.write(f"{note}\tone db changed\t_meta/changelog/x.md\n")
+
+    def note_path(self, sha):
+        date = subprocess.run(("git", "-C", self.ndir, "show", "-s", "--format=%cs", sha),
+                              capture_output=True, text=True, check=True).stdout.strip()
+        return os.path.join(os.path.realpath(self.ndir), "_meta", "changelog", f"{date}.md")
+
+    def test_a_queued_digest_for_the_reanalyzed_note_is_dropped(self):
+        sha = self.seed_reanalyze_note()
+        self.queue(self.note_path(sha))
+        res = self.run_refresh("reanalyze", sha)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertFalse(os.path.exists(self.pending()),
+                         "the digest was sent by the reanalysis; the queued copy would send it twice")
+
+    def test_a_queued_digest_for_another_note_survives(self):
+        sha = self.seed_reanalyze_note()
+        other = os.path.join(os.path.realpath(self.ndir), "_meta", "changelog", "1999-12-31.md")
+        self.queue(other)
+        res = self.run_refresh("reanalyze", sha)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertTrue(os.path.exists(self.pending()),
+                        "an unrelated run's digest is still owed")
+
+
 if __name__ == "__main__":
     unittest.main()
