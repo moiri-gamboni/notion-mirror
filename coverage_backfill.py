@@ -419,7 +419,7 @@ def capture_database(ctx, db_id):
     try:
         refresh.jsave(os.path.join(tmp, "_schema.json"),
                       {"id": db_id, "title": title, "database": d,
-                       "data_sources": d.get("data_sources") or []})
+                       "data_sources": refresh.data_source_stubs(None, fresh=d.get("data_sources"))})
         # a throwaway `discovered` set, as capture_new_db passes: what this run
         # follows is what the written artifacts reference, not relation targets
         refresh.refresh_db(ctx.api, ctx.users, db_id, tmpname, ctx.state,

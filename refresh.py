@@ -586,9 +586,43 @@ def schema_md(title, db_id, nrows, props):
     return "\n".join(lines) + "\n"
 
 
-def refresh_schema_files(api, dirpath, db_id, title, nrows, report, force=False):
+def data_source_stubs(stored, fresh=None):
+    """A database's data sources, by id and nothing else.
+
+    Schemas do not belong here. `refresh_schema_files` fetches databases at
+    2022-06-28, whose response carries no `data_sources` at all (the field
+    arrived with 2025-09-03), so nothing in this block can be refreshed from
+    that call — whatever it holds is carried across runs. A carried *id* is
+    safe: it is fixed for the life of the data source, and it is what the block
+    is read for, since the 2025-09-03 endpoints address rows by data source.
+    A carried *schema* is not. The blocks written before this engine existed
+    held whole `GET /v1/data_sources/{id}` responses, properties included, and
+    `old.get("data_sources") or …` kept them: measured 2026-09-22, 100 of the
+    401 blocks no longer matched the `database.properties` sitting beside them
+    — one short by 46 of that database's 91 properties, the furthest 208 days
+    behind the database's own last edit — with nothing in the file saying which
+    of the two a reader should believe. A name would go the same way
+    (a data source can be renamed) and is not kept either, which also keeps the
+    block identical whichever caller writes it — `phase_dbs` runs before
+    `phase_schema_sweep` in the same process, so a field only one of them can
+    supply would be written and then stripped again before the run commits.
+
+    An empty `fresh` falls back to `stored`: every Notion database has at least
+    one data source, so an empty live list is a bad answer, not news, and it
+    must not erase ids nothing else can re-fetch.
+    """
+    return [{"id": s["id"]} for s in (fresh or stored or [])
+            if isinstance(s, dict) and s.get("id")]
+
+
+def refresh_schema_files(api, dirpath, db_id, title, nrows, report, force=False,
+                         data_sources=None):
     """GET schema; rewrite _schema.json/_schema.md if content changed.
-    Returns (props, live_title)."""
+    Returns (props, live_title).
+
+    `data_sources` is a live list for a caller that has one — `query_db_rows`
+    fetches it for every multi-source database — and None for a caller that
+    does not, which carries the recorded ids over. See `data_source_stubs`."""
     spath = os.path.join(dirpath, "_schema.json")
     old = jload(spath, {})
     try:
@@ -598,11 +632,17 @@ def refresh_schema_files(api, dirpath, db_id, title, nrows, report, force=False)
         return (old.get("database") or {}).get("properties") or {}, title
     d.pop("request_id", None)
     live_title = plain(d.get("title")) or title
+    # fresh first, recorded second: the old merge had both arms the other way
+    # round, so the recorded value won and the response's was never reached.
     new = {"id": db_id, "title": live_title, "database": d,
-           "data_sources": old.get("data_sources") or d.get("data_sources") or []}
+           "data_sources": data_source_stubs(old.get("data_sources"),
+                                             data_sources or d.get("data_sources"))}
     oldn = dict(old.get("database") or {})
     oldn.pop("request_id", None)
-    if force or oldn != d or old.get("title") != live_title:
+    # data_sources is in the predicate, not just in `new`: without it a corrected
+    # block would be computed and dropped on every database whose schema is steady.
+    if force or oldn != d or old.get("title") != live_title \
+            or old.get("data_sources") != new["data_sources"]:
         jsave(spath, new)
         props = d.get("properties") or {}
         with open(os.path.join(dirpath, "_schema.md"), "w") as f:
@@ -690,8 +730,11 @@ def refresh_db(api, users, db_id, dirname, state, report, args, discovered):
     ordered_new = [k for k in schema_props if k in seen and k not in cols] + \
                   [k for k in prop_names if k not in cols and k not in schema_props]
     if missing_cols:
-        # property removed from schema? verify before dropping
-        props, title = refresh_schema_files(api, dirpath, db_id, title, len(rows), report)
+        # property removed from schema? verify before dropping. The row query
+        # has already paid for a live data-source list if this database has more
+        # than one; hand it over rather than let the schema file carry old ids.
+        props, title = refresh_schema_files(api, dirpath, db_id, title, len(rows), report,
+                                            data_sources=(ds_extra or {}).get("data_sources"))
         still = [c for c in missing_cols if c in props]
         cols += still  # keep (rows just don't carry it); drop the truly-removed
         if len(still) < len(missing_cols):
@@ -898,7 +941,10 @@ def capture_new_db(api, users, db_id, state, report, args):
         return
     os.makedirs(dirpath, exist_ok=True)
     jsave(os.path.join(dirpath, "_schema.json"),
-          {"id": db_id, "title": title, "database": d, "data_sources": d.get("data_sources") or []})
+          {"id": db_id, "title": title, "database": d,
+           # empty at 2022-06-28, which carries no data_sources: a new database's
+           # ids arrive the first time a caller with a live list refreshes it
+           "data_sources": data_source_stubs(None, fresh=d.get("data_sources"))})
     try:
         rows, _ = query_db_rows(api, db_id)
     except (ApiError, Budget) as e:

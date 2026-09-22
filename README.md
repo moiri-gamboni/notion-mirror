@@ -190,6 +190,8 @@ NOTION_MIRROR=/path/to/mirror python3 -m unittest discover tests
   CHANGELOG.md                one index line per refresh
 ```
 
+`_schema.json` carries the database's `GET /databases/{id}` response under `database` — properties included, because at Notion-Version 2022-06-28 a database's properties *are* its single data source's — and under `data_sources` the data-source ids, which is what the 2025-09-03 endpoints address rows by (`POST /v1/data_sources/{id}/query`). Ids and nothing else: an id is fixed for the life of a data source, so carrying it between runs is safe, while the whole data-source objects that block used to hold were not. Those were captured once by tooling that predates this engine and never refreshed, and by 2026-09 a quarter of them disagreed with the `database.properties` beside them — one short by 46 of that database's 91 properties, the furthest 208 days behind the database's own last edit — with nothing in the file saying which of the two a reader should believe. Read the schema from `database.properties` (or `_schema.md`). A database whose `data_sources` is empty has simply never had its ids recorded: the 2022-06-28 response does not carry them, so only a caller holding a live list (the multi-source row-query path) can fill it in.
+
 ### Module surface for other tools
 
 `mirror_root.py` is stdlib-only and asserts nothing at import:
