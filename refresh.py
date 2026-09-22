@@ -2850,8 +2850,12 @@ def phase_discovery(api, users, state, report, args, discovered):
 
 
 def phase_schema_sweep(api, users, state, report, args):
-    """Weekly: refresh every _schema.json/_schema.md (+ row/prop counts).
-    Detects DB renames and cascades them (dir, csv, row-md headers)."""
+    """Every run: refresh every _schema.json/_schema.md (+ row/prop counts).
+    Detects DB renames and cascades them (dir, csv, row-md headers).
+
+    One GET per database, so the phase costs as many requests as the mirror has
+    databases — 750 of the 2026-09-22 run's 11,229 — which is the budget any
+    second per-database fetch here would have to justify."""
     for db_id, dirname in sorted(db_dirs().items(), key=lambda kv: kv[1].lower()):
         dirpath = os.path.join(DBS, dirname)
         schema = jload(os.path.join(dirpath, "_schema.json"), {})
