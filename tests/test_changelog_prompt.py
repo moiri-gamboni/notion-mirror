@@ -82,7 +82,8 @@ class Sandbox(unittest.TestCase):
                   self.home, self.config, self.bin):
             os.makedirs(d)
         write_exec(os.path.join(self.tools, "refresh.py"), STUB_REFRESH)
-        for name in ("rows_status.py", "row_floor.py", "changelog-prompt.md", "mirror_root.py"):
+        for name in ("rows_status.py", "row_floor.py", "changelog-prompt.md", "mirror_root.py",
+                     "tree_status.py"):
             shutil.copy(os.path.join(TOOLS, name), os.path.join(self.tools, name))
         write_exec(os.path.join(self.bin, "claude"), STUB_CLAUDE)
         for name in ("curl", "logger"):

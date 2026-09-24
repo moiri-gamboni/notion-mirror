@@ -83,7 +83,7 @@ class Sandbox(unittest.TestCase):
         # check the wrapper runs on every mode, and it fails closed when absent —
         # a sandbox without it would refuse every run for the wrong reason. Both
         # import the resolver beside them.
-        for name in ("rows_status.py", "row_floor.py", "mirror_root.py"):
+        for name in ("rows_status.py", "row_floor.py", "mirror_root.py", "tree_status.py"):
             shutil.copy(os.path.join(TOOLS, name), os.path.join(self.tools, name))
         for name in ("curl", "logger"):
             write_exec(os.path.join(self.bin, name), STUB_RECORDER.replace("{name}", name))

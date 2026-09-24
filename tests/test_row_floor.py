@@ -295,7 +295,7 @@ class WrapperTest(RepoCase):
         for d in (self.home, self.config, self.bin, self.state, self.tools):
             os.makedirs(d, exist_ok=True)
         write_exec(os.path.join(self.tools, "refresh.py"), STUB_REFRESH)
-        for name in ("rows_status.py", "row_floor.py", "mirror_root.py"):
+        for name in ("rows_status.py", "row_floor.py", "mirror_root.py", "tree_status.py"):
             shutil.copy(os.path.join(TOOLS, name), os.path.join(self.tools, name))
         for name in ("curl", "logger"):
             write_exec(os.path.join(self.bin, name), STUB_RECORDER.replace("{name}", name))

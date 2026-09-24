@@ -299,19 +299,75 @@ git rev-parse --git-dir >/dev/null 2>&1 || guard_out failed no_repo "not a git r
 for f in MERGE_HEAD REBASE_HEAD CHERRY_PICK_HEAD; do
     [ -e "$(git rev-parse --git-dir)/$f" ] && guard_out skipped git_busy "git $f in progress — refusing to touch the tree"
 done
-# The dirty-tree preflight is kept in rows mode, not relaxed: an hourly commit
-# over someone else's half-written tree is worse than an hour of staleness. What
-# changes is the volume — a skip, not a high-priority alert, since the usual
-# cause is a mirror-writing session mid-commit and it clears within minutes. A
-# tree that stays dirty (a crashed nightly) stops the hourly job from succeeding
-# at all, which is what the dead-man is for.
-if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+# --- the run marker ------------------------------------------------------------
+# What the last writing run left behind, so a dirty tree can say whose it is.
+# Written "running" just before the engine starts and removed once its work is
+# committed; a run that dies in between (a traceback, a kill, a full disk, a
+# failed commit) leaves it "running" or "crashed", and a designed refusal that
+# leaves its output for inspection (row floor, comment contamination) marks it
+# "refused". Under our own lock, any "running" marker is a dead run's.
+RUN_MARK="$STATE/refresh-run.json"
+mark_run() {
+    printf '{"mode": "%s", "pid": %s, "started": "%s", "status": "%s", "reason": "%s"}\n' \
+        "$MODE" "$$" "${RUN_STARTED:-}" "$1" "${2:-}" > "$RUN_MARK.tmp" && mv "$RUN_MARK.tmp" "$RUN_MARK"
+}
+run_mark_status() {
+    python3 - "$RUN_MARK" <<'EOF'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("status", ""))
+except (OSError, ValueError):
+    print("")
+EOF
+}
+
+# --- dirty-tree preflight --------------------------------------------------------
+# Kept in rows mode, not relaxed: an hourly commit over someone else's
+# half-written tree is worse than an hour of staleness. What it looks at is the
+# engine's own paths (tree_status.py): a change there is a crashed or refused
+# run's output, or a hand edit of generated files. A change anywhere else — the
+# mirror's README, summaries/, a hand-run census — is someone's work in the
+# repository, which no refresh stages or commits, so it no longer stops one (on
+# 2026-09-22 one README edit left uncommitted overnight refused the nightly and
+# 13 hourly ticks).
+#
+# A crashed nightly used to wedge until a human ran NOTION_REFRESH_RESUME=1 (7 of
+# 10 nights in 2026-09). A nightly whose predecessor died now resumes over its
+# writes by itself, which is what that human did every time: the engine re-renders
+# every row and page it touches, and the commit is still guarded by the row floor
+# and the contamination assert. It does not resume over a refused run, whose
+# output is left for inspection, nor over changes it cannot attribute to a run.
+TREE_OUT="$(python3 "$TOOLS/tree_status.py" --repo "$NDIR")" \
+    || guard_out failed tree_status "could not read the mirror's git status"
+ENGINE_DIRTY="$(printf '%s\n' "$TREE_OUT" | awk -F'\t' '$1=="engine"{print $2}')"
+FOREIGN_DIRTY="$(printf '%s\n' "$TREE_OUT" | awk -F'\t' '$1=="foreign"{print $2}')"
+STAGED_FOREIGN="$(printf '%s\n' "$TREE_OUT" | awk -F'\t' '$1=="staged"{print $2}')"
+listed() { printf '%s\n' "$1" | head -n 3 | paste -sd ',' | sed 's/,/, /g'; }
+if [ -n "$STAGED_FOREIGN" ]; then
+    guard_out skipped git_busy "changes outside the engine's paths are staged ($(listed "$STAGED_FOREIGN")) — a commit in progress? A refresh commit would take them with it"
+fi
+if [ -n "$ENGINE_DIRTY" ]; then
+    LAST_RUN_STATUS="$(run_mark_status)"
     if [ "${NOTION_REFRESH_RESUME:-0}" = "1" ]; then
         say "resume mode: proceeding over a dirty mirror tree (assumed to be a prior run's own writes)"
+    elif { [ "$MODE" = "daily" ] || [ "$MODE" = "full-comments" ]; } \
+            && { [ "$LAST_RUN_STATUS" = "running" ] || [ "$LAST_RUN_STATUS" = "crashed" ]; }; then
+        say "auto-resume: the last run died with the tree dirty ($LAST_RUN_STATUS); proceeding over its writes"
+        ntfy default "Notion mirror: resuming over a crashed run" \
+            "The previous refresh died before committing; this $MODE run is continuing over its writes. $(printf '%s\n' "$ENGINE_DIRTY" | wc -l) uncommitted path(s), e.g. $(listed "$ENGINE_DIRTY")"
     else
-        guard_out skipped dirty_tree "the mirror has uncommitted changes (manual edits or a crashed run) — commit/stash them, or NOTION_REFRESH_RESUME=1 to continue a crashed run"
+        guard_out skipped dirty_tree "the mirror has uncommitted changes in the engine's own paths ($(listed "$ENGINE_DIRTY"); a refused run's output, a hand edit, or a crash no marker records) — commit/stash them, or NOTION_REFRESH_RESUME=1 to continue a crashed run"
     fi
 fi
+if [ -n "$FOREIGN_DIRTY" ]; then
+    say "leaving $(printf '%s\n' "$FOREIGN_DIRTY" | wc -l) uncommitted path(s) outside the engine's alone: $(listed "$FOREIGN_DIRTY")"
+    if [ "$MODE" = "daily" ]; then
+        ntfy low "Notion mirror: uncommitted edits in the mirror repo" \
+            "Not the engine's, so no refresh commits them: $(listed "$FOREIGN_DIRTY")"
+    fi
+fi
+# Stage what the engine owns and nothing else (see tree_status.py).
+stage_engine() { python3 "$TOOLS/tree_status.py" --repo "$NDIR" --stage; }
 
 # --- reanalyze: regenerate the changelog note for an already-committed refresh
 # (used when the analysis failed or was skipped; writes only the note)
@@ -373,8 +429,28 @@ export NOTION_TOKEN
 # --- refresh ----------------------------------------------------------------
 say "refresh start: mode=$MODE"
 RPS="${NOTION_REFRESH_RPS:-3.0}"
+RUN_STARTED="$(date -u -Is)"
+mark_run running
+REPORT_JSON="$STATE/last-run-report$([ "$MODE" = "rows" ] && echo .rows).json"
 if ! OUT="$(python3 "$TOOLS/refresh.py" --mode "$MODE" --rps "$RPS" "${ROWS_ARG[@]}")"; then
-    guard_out failed refresh_failed "refresh.py exited non-zero (mode=$MODE); see log"
+    # A contamination breach (or an assert that could not run) is a designed
+    # refusal that leaves the suspect write for inspection; anything else is a
+    # crash. The report distinguishes them when this run wrote it.
+    VERDICT="$(python3 - "$REPORT_JSON" "$RUN_MARK" <<'EOF'
+import json, os, sys
+report, mark = sys.argv[1:3]
+try:
+    if os.path.getmtime(report) >= os.path.getmtime(mark):
+        if json.load(open(report))["comments"].get("contamination_breaches", 0) != 0:
+            print("refused")
+            sys.exit(0)
+except (OSError, ValueError, KeyError, TypeError):
+    pass
+print("crashed")
+EOF
+)"
+    mark_run "$VERDICT" refresh_failed
+    guard_out failed refresh_failed "refresh.py exited non-zero (mode=$MODE, $VERDICT); see log"
 fi
 say "refresh.py: $OUT"
 
@@ -391,6 +467,7 @@ if ! FLOOR_OUT="$(python3 "$TOOLS/row_floor.py" --repo "$NDIR" 2>&1)"; then
     if [ "$MODE" = "rows" ]; then
         ntfy high "Notion mirror: row floor tripped" "$FLOOR_OUT"
     fi
+    mark_run refused row_floor
     guard_out failed row_floor "$FLOOR_OUT"
 fi
 
@@ -407,20 +484,19 @@ bits.append(f"{r['requests']} req")
 print("; ".join(bits))
 EOF
 )" || ROWS_SUMMARY="rows refresh"
-    if [ -n "$(git status --porcelain)" ]; then
-        # Wholesale `git add -A`, not a slim pathspec. A probe writes tracked
-        # files outside the row .md: attachments, .gitignore appends for
-        # >100MB ones, _schema.json/_schema.md/_ALL-SCHEMAS.md, and a rename on
-        # title change. A pathspec commit would leave those dirty and kill that
-        # night's nightly on its own preflight. Named hazard: after a crashed
-        # nightly this sweeps partial writes into an hourly commit, which makes
-        # NOTION_REFRESH_RESUME=1 moot.
-        git add -A >/dev/null || guard_out failed git_add_failed "git add failed"
+    # Everything under the engine's paths, not just the row files: a probe also
+    # writes attachments, .gitignore appends for >100MB ones,
+    # _schema.json/_schema.md/_ALL-SCHEMAS.md, and a rename on title change. A
+    # narrower commit would leave those dirty and stop that night's nightly on
+    # its own preflight.
+    stage_engine || guard_out failed git_add_failed "git add failed"
+    if ! git diff --cached --quiet; then
         git commit -q -m "notion refresh (rows): $ROWS_SUMMARY" || guard_out failed git_commit_failed "git commit failed"
         say "committed: $ROWS_SUMMARY"
     else
         say "rows refresh: no changes ($ROWS_SUMMARY)"
     fi
+    rm -f "$RUN_MARK"
     # The marker the dead-man reads. The verdict comes from the run's own report
     # rather than from this script's exit status, because a rows run that refused
     # every named row exits 0 and leaves a clean tree. See
@@ -431,16 +507,17 @@ fi
 CHANGES="$(python3 -c "import json,sys;print(json.loads(sys.argv[1]).get('changes') and 1 or 0)" "$OUT")" || CHANGES=0
 
 if [ "$CHANGES" != "1" ]; then
-    if [ -n "$(git status --porcelain)" ]; then
+    stage_engine || fail "git add failed"
+    if ! git diff --cached --quiet; then
         say "no content changes reported, but tree dirty (state/format touch-ups) — committing quietly"
-        git add -A >/dev/null
-        git commit -q -m "notion refresh ($MODE): housekeeping, no content changes" || true
+        git commit -q -m "notion refresh ($MODE): housekeeping, no content changes" || fail "git commit failed"
     fi
+    rm -f "$RUN_MARK"
     say "no changes — done"
     exit 0
 fi
 
-git add -A >/dev/null || fail "git add failed"
+stage_engine || fail "git add failed"
 
 # --- summary line for CHANGELOG.md / commit ---------------------------------
 SUMMARY="$(python3 - "$STATE/last-run-report.json" <<'EOF'
@@ -526,10 +603,11 @@ open(path, "w").write("\n".join(lines))
 EOF
 
 # --- commit -----------------------------------------------------------------
-git add -A >/dev/null
+stage_engine || fail "git add failed"
 git commit -q -m "notion refresh ($MODE): $DATE_UTC — $SUMMARY
 
 Automated mirror refresh; changelog note at $REL." || fail "git commit failed"
+rm -f "$RUN_MARK"
 say "committed: $SUMMARY"
 if [ "${NOTION_REFRESH_PUSH:-0}" = "1" ]; then
     if git push >/dev/null 2>&1; then
