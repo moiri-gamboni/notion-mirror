@@ -160,6 +160,17 @@ class TreeStatus(Wedge):
         self.assertEqual(sorted(got["foreign"]), ["README.md", "summaries/s.md"])
         self.assertEqual(got["staged"], [])
 
+    def test_stage_skips_a_half_written_tmp_and_reports_foreign_staging(self):
+        os.makedirs(os.path.join(self.mirror, "_meta", "changelog"))
+        with open(os.path.join(self.mirror, "_meta", "changelog", "2026-09-24.md.tmp"), "w") as f:
+            f.write("half a note\n")
+        with open(os.path.join(self.mirror, "README.md"), "a") as f:
+            f.write("staged by a person\n")
+        self.git("add", "README.md")
+        self.assertEqual(tree_status.stage(self.mirror), ["README.md"])
+        staged = self.git("diff", "--cached", "--name-only").split()
+        self.assertEqual(staged, ["README.md"], "the .tmp stays out of the index")
+
     def test_stage_takes_engine_paths_only_including_deletions(self):
         os.remove(os.path.join(self.mirror, "workspace", ".keep"))
         with open(os.path.join(self.mirror, "README.md"), "a") as f:

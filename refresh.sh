@@ -489,7 +489,7 @@ EOF
     # _schema.json/_schema.md/_ALL-SCHEMAS.md, and a rename on title change. A
     # narrower commit would leave those dirty and stop that night's nightly on
     # its own preflight.
-    stage_engine || guard_out failed git_add_failed "git add failed"
+    stage_engine || guard_out failed git_add_failed "git add failed, or someone staged a change outside the engine's paths mid-run"
     if ! git diff --cached --quiet; then
         git commit -q -m "notion refresh (rows): $ROWS_SUMMARY" || guard_out failed git_commit_failed "git commit failed"
         say "committed: $ROWS_SUMMARY"
@@ -507,7 +507,7 @@ fi
 CHANGES="$(python3 -c "import json,sys;print(json.loads(sys.argv[1]).get('changes') and 1 or 0)" "$OUT")" || CHANGES=0
 
 if [ "$CHANGES" != "1" ]; then
-    stage_engine || fail "git add failed"
+    stage_engine || fail "git add failed, or someone staged a change outside the engine's paths mid-run"
     if ! git diff --cached --quiet; then
         say "no content changes reported, but tree dirty (state/format touch-ups) — committing quietly"
         git commit -q -m "notion refresh ($MODE): housekeeping, no content changes" || fail "git commit failed"
@@ -517,7 +517,7 @@ if [ "$CHANGES" != "1" ]; then
     exit 0
 fi
 
-stage_engine || fail "git add failed"
+stage_engine || fail "git add failed, or someone staged a change outside the engine's paths mid-run"
 
 # --- summary line for CHANGELOG.md / commit ---------------------------------
 SUMMARY="$(python3 - "$STATE/last-run-report.json" <<'EOF'
@@ -540,6 +540,8 @@ EOF
 )" || SUMMARY="changes"
 
 DATE_UTC="$(date -u +%F)"
+# a note a killed run was still writing; under the lock nothing else writes these
+rm -f "$NDIR"/_meta/changelog/*.tmp
 NOTE="$NDIR/_meta/changelog/$DATE_UTC.md"
 [ -e "$NOTE" ] && NOTE="$NDIR/_meta/changelog/$DATE_UTC-$(date -u +%H%M).md"
 mkdir -p "$NDIR/_meta/changelog"
@@ -603,7 +605,7 @@ open(path, "w").write("\n".join(lines))
 EOF
 
 # --- commit -----------------------------------------------------------------
-stage_engine || fail "git add failed"
+stage_engine || fail "git add failed, or someone staged a change outside the engine's paths mid-run"
 git commit -q -m "notion refresh ($MODE): $DATE_UTC — $SUMMARY
 
 Automated mirror refresh; changelog note at $REL." || fail "git commit failed"

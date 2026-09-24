@@ -12,7 +12,8 @@ path outside them is someone else's and is left alone, unstaged and uncommitted.
   tree_status.py --repo R            one line per dirty path: `engine<TAB>path`,
                                      `foreign<TAB>path` or `staged<TAB>path` (a foreign
                                      change already in the index, which a commit would take)
-  tree_status.py --repo R --stage    `git add -A` over the engine's paths only
+  tree_status.py --repo R --stage    `git add -A` over the engine's paths only; exit 3
+                                     when the index also holds a foreign change
 
 Stdlib only; asserts nothing at import.
 """
@@ -70,13 +71,17 @@ def classify(repo):
 
 
 def stage(repo):
-    """Stage every change under the engine's paths and nothing else. A pathspec that
-    matches nothing is an error to `git add`, so only paths that exist or are tracked
-    are passed."""
+    """Stage every change under the engine's paths and nothing else; returns the
+    foreign paths the index holds anyway (staged by someone while the run went on),
+    which a commit would take with it. A pathspec that matches nothing is an error
+    to `git add`, so only paths that exist or are tracked are passed. `*.tmp` is
+    never staged: it is a write a killed process left half-done (a changelog note
+    still being generated), not output."""
     specs = [p.rstrip("/") for p in ENGINE_PATHS
              if os.path.exists(os.path.join(repo, p)) or _git(repo, "ls-files", "--", p.rstrip("/"))]
     if specs:
-        _git(repo, "add", "-A", "--", *specs)
+        _git(repo, "add", "-A", "--", *specs, ":(exclude,glob)**/*.tmp")
+    return classify(repo)["staged"]
 
 
 def main(argv=None):
@@ -86,7 +91,11 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         if args.stage:
-            stage(args.repo)
+            foreign = stage(args.repo)
+            if foreign:
+                sys.stderr.write("tree_status: changes outside the engine's paths are staged, "
+                                 "and a commit would take them: " + ", ".join(foreign[:5]) + "\n")
+                return 3
             return 0
         for kind, paths in classify(args.repo).items():
             for p in paths:
