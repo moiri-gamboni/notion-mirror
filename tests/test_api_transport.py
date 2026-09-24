@@ -122,6 +122,7 @@ class EndpointCount(TruncatedBody):
                  ("POST", "/data_sources/x/query"): "query",
                  ("POST", "/search"): "search",
                  ("GET", "/comments"): "comments",
+                 ("GET", "/comments/x"): "comments/one",
                  ("GET", "/blocks/x/children"): "blocks/children",
                  ("GET", "/blocks/x"): "blocks",
                  ("GET", "/pages/x"): "pages",

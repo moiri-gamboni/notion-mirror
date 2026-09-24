@@ -68,6 +68,8 @@ def endpoint_class(method, path):
         return "search"
     if p == "/comments":
         return "comments"
+    if p.startswith("/comments/"):
+        return "comments/one"
     if p.startswith("/blocks/"):
         return "blocks/children" if p.endswith("/children") else "blocks"
     if p.startswith("/pages/"):
