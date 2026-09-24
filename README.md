@@ -18,7 +18,7 @@ Stdlib Python 3.12 and bash; no packages. `NOTION_TOKEN` comes from the environm
 4. Make the mirror a git repository: `git -C /path/to/mirror init`, and ignore its run state — `_meta/state/` must be in the mirror's `.gitignore`, or every marker write would dirty the tree the preflight guards.
 5. Create a Notion internal integration and share it with read access to the pages and databases you want mirrored: [https://developers.notion.com/docs/create-a-notion-integration](https://developers.notion.com/docs/create-a-notion-integration).
 6. Put the token where the wrapper reads it: `NOTION_TOKEN` in the environment, or Claude's `.claude.json` under `CLAUDE_CONFIG_DIR` (default `~/.claude`) with the Notion MCP server's `env.NOTION_TOKEN`.
-7. If the workspace has machine-generated subtrees (bot-written delta logs, recordings), name them: `NOTION_MIRROR_AUTOMATION_SUBTREES=Hub/Automations:Other/Logs` in the env file. Those prefixes get a slower comment scan instead of starving the human corpus.
+7. If the workspace has machine-generated subtrees (bot-written delta logs, recordings), name them: `NOTION_MIRROR_AUTOMATION_SUBTREES=Hub/Automations:Other/Logs` in the env file. A page under those prefixes is captured once and then left alone: never re-walked, never comment-scanned.
 8. Run the first refresh: `./refresh.sh daily`. It performs full discovery over every database shared with the integration at ~3 req/s, which takes hours; set `NOTION_REFRESH_BUDGET` to cap one run and let the next continue.
 
 A wrong `NOTION_MIRROR` never produces an empty parallel mirror: `mirror_root.py` refuses a directory without `workspace/_databases` and says what it tried, where the value came from and what to change.
@@ -85,7 +85,7 @@ The parser in `notion_core/md_blocks.py` inverts the renderer; a rendering chang
 | Key | Meaning |
 |---|---|
 | `NOTION_MIRROR` | The mirror directory. Resolved to its realpath; must hold `workspace/_databases` (except for `init`). |
-| `NOTION_MIRROR_AUTOMATION_SUBTREES` | Colon-separated `workspace/`-relative prefixes of machine-generated subtrees. The rolling comment scan gives them 10% of its budget. Empty when unset. |
+| `NOTION_MIRROR_AUTOMATION_SUBTREES` | Colon-separated `workspace/`-relative prefixes of machine-generated subtrees. A page under one is captured at first sight and never re-walked or comment-scanned after that. Empty when unset. |
 
 `refresh.sh` reads the following from the environment only (never the file), each with the default shown:
 
@@ -102,7 +102,6 @@ The parser in `notion_core/md_blocks.py` inverts the renderer; a rendering chang
 | `NOTION_REFRESH_COMMENT_BUDGET` | `4000` | Requests for the rolling comment shard. |
 | `NOTION_REFRESH_COMMENT_BUDGET_WEBHOOK` | `1500` | The shard's budget while webhook events are flowing. |
 | `NOTION_REFRESH_QUEUE_BUDGET` | `max(1000, budget // 3)` | Cap on the webhook probe queue per run. |
-| `NOTION_REFRESH_AUTOMATION_WALK_CAP` | `40` | Per-page request cap inside the automation subtrees. |
 | `NOTION_REFRESH_MODEL` | `opus` | Model for the changelog analysis (the CLI alias, so the latest Opus). |
 | `NOTION_REFRESH_EFFORT` | `medium` | Its `--effort`. |
 | `NOTION_REFRESH_ANALYSIS_TIMEOUT` | `3600` | Seconds before the analysis is abandoned for a stub note. |

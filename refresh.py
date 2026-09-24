@@ -1174,13 +1174,10 @@ def walk_content_page(api, users, page_meta, page_index, report, args, meta=None
     """Re-render one content page .md (body + comments + attachments)."""
     pid = page_meta["id"]
     title = page_meta.get("title") or "untitled"
-    # per-page request cap: auto-generated logs/transcripts (the automation
-    # subtrees: delta logs, recordings) are large, deeply nested, change daily, and carry no
-    # human signal — one such page could otherwise burn thousands of requests and
-    # starve the rest of the run. Cap them hard; give human pages generous room.
-    cap = int(os.environ.get("NOTION_REFRESH_AUTOMATION_WALK_CAP", "40")) \
-        if _is_automation(pid, page_index) else int(os.environ.get("NOTION_REFRESH_PAGE_WALK_CAP", "400"))
-    w = Walker(api, users, max_blocks=6000, max_requests=cap)
+    # No request cap: what bounds a walk is what the mirror agrees to render
+    # (6,000 blocks), and the pages that used to need a cap — the automation
+    # subtrees — are never re-walked at all (phase_content's scope rule).
+    w = Walker(api, users, max_blocks=6000)
     lines = [f"# {title}", "",
              f"<!-- notion page id: {pid} | parent: "
              f"{json.dumps({'type': page_meta.get('parent_type'), 'id': page_meta.get('parent_id')})} -->", ""]
@@ -1887,7 +1884,7 @@ def new_report(mode):
                     "errors": [], "probe_annotated": []},
             "pages": {"changed": [], "new": [], "deleted": [], "renamed": [], "placed": [], "errors": []},
             "comments": {"pages_rescanned": 0, "added": 0, "retained": 0,
-                         "row_block_scans_capped": 0, "page_scans_capped": 0,
+                         "row_block_scans_capped": 0,
                          "contamination_breaches": 0},
             "attachments": {"downloaded": [], "failed": []},
             "deferred": {"row_probes_queued": 0},
@@ -1965,8 +1962,6 @@ def report_md(r):
     capnotes = []
     if c.get("row_block_scans_capped"):
         capnotes.append(f"{c['row_block_scans_capped']} big row bodies")
-    if c.get("page_scans_capped"):
-        capnotes.append(f"{c['page_scans_capped']} automation pages")
     L += ["", f"## Comments — {c['pages_rescanned']} pages rescanned, +{c['added']} new, "
           f"{c['retained']} newly marked resolved/deleted (kept)"
           + (f" (per-block scan skipped: {', '.join(capnotes)})" if capnotes else "")]
@@ -2562,15 +2557,15 @@ def phase_content(api, users, state, report, args, mode, discovered):
                 os.remove(path)
             continue
         body_changed = old is None or old.get("last_edited_time") != m.get("last_edited_time")
-        # Bot-generated automation pages (the automation subtrees: delta logs — up to
-        # 70k blocks of "No changes detected" — and recordings) are append-only,
-        # change daily, and carry zero human/comment signal. Re-rendering them
-        # daily is the dominant request+time cost. Capture each ONCE (first sight),
-        # then skip the body re-walk on later changes (metadata still refreshes).
-        # A rare full pass (--mode full-comments, or manual) still refreshes them.
+        # Scope rule, not a request cap: a page under an automation subtree (bot
+        # delta logs — up to 70k blocks of "No changes detected" — and recordings)
+        # is captured once, at first sight, and never re-walked; its metadata still
+        # refreshes. They are append-only, change daily and carry no human signal:
+        # on 2026-07-20 thirteen of them re-walked nightly cost ~14k requests, and a
+        # per-page request cap only turned that into a truncated render repeated
+        # every night. Nothing under them is comment-scanned either.
         if body_changed and old is not None and i in page_index \
-                and _is_automation(i, page_index) \
-                and os.environ.get("NOTION_REFRESH_WALK_AUTOMATION", "0") != "1":
+                and _is_automation(i, page_index):
             report["pages"]["automation_skipped"] = report["pages"].get("automation_skipped", 0) + 1
             continue
         try:
@@ -2584,15 +2579,12 @@ def phase_content(api, users, state, report, args, mode, discovered):
                     state["retry_pages"].pop(i, None)
                 for did, _t in w.child_dbs:
                     discovered.add("db:" + did)
-                # automation transcript pages are huge and comment-free: cap their
-                # per-block comment scan so daily recording churn stays cheap. A
-                # capped page keeps its existing _comments.md section untouched.
-                cap = 50 if _is_automation(i, page_index) else None
-                bc, capped = w.harvest_comments(cap=cap)
+                # the scope rule's other half: an automation page (here only at
+                # first sight) is never comment-scanned, so its _comments.md
+                # section, if any, is left untouched
                 n_comments = 0
-                if capped:
-                    report["comments"]["page_scans_capped"] += 1
-                else:
+                if not _is_automation(i, page_index):
+                    bc, _capped = w.harvest_comments()
                     pl = w.comments_for(dashed(i))
                     comment_updates[i] = {"title": m.get("title") or "(untitled)",
                                           "bullets": union_captured(comment_bullets(pl, bc), i, users)}
@@ -2636,8 +2628,8 @@ def phase_content(api, users, state, report, args, mode, discovered):
 
 # Machine-generated subtrees (workspace/-relative prefixes, colon-separated in
 # `NOTION_MIRROR_AUTOMATION_SUBTREES`): typically most of the block volume and no
-# human comment traffic. The rolling comment scan cycles them slowly (10% of
-# budget) instead of letting them starve the human corpus. Empty when unset.
+# human comment traffic. Out of scope for everything but a first capture: never
+# re-walked (phase_content) and never comment-scanned. Empty when unset.
 AUTOMATION_SUBTREES = tuple(
     s for s in (mirror_root.config("NOTION_MIRROR_AUTOMATION_SUBTREES") or "").split(":") if s)
 
@@ -2650,10 +2642,10 @@ def _is_automation(pid, page_index):
     return any(rel.startswith(s + os.sep) for s in AUTOMATION_SUBTREES)
 
 
-def scan_page_comments(api, users, m, walk_cap=400):
+def scan_page_comments(api, users, m):
     """Per-block comment rescan of one page -> bullets (walk + harvest +
-    page-level + webhook-captured union). walk_cap bounds a single huge page."""
-    w = Walker(api, users, max_blocks=6000, max_requests=walk_cap)
+    page-level + webhook-captured union)."""
+    w = Walker(api, users, max_blocks=6000)
     sink = []
     w.walk(dashed(m["id"]), sink, 0)
     pl = w.comments_for(dashed(m["id"]))
@@ -2690,7 +2682,6 @@ def phase_comment_shard(api, users, meta, state, report, args, budget_req):
     done = set()
 
     def scan(pages, label, cap):
-        wc = 40 if label == "auto" else 400
         for m in sorted(pages, key=lambda x: scans.get(x["id"], "")):
             if m["id"] in done:
                 continue
@@ -2698,7 +2689,7 @@ def phase_comment_shard(api, users, meta, state, report, args, budget_req):
                 return
             try:
                 updates[m["id"]] = {"title": m.get("title") or "(untitled)",
-                                    "bullets": scan_page_comments(api, users, m, walk_cap=wc)}
+                                    "bullets": scan_page_comments(api, users, m)}
                 scans[m["id"]] = now_iso()
                 counts[label] += 1
                 done.add(m["id"])
@@ -2795,7 +2786,7 @@ def phase_full_comment_sweep(api, users, meta, state, report, args):
     for n, m in enumerate(sorted(content, key=lambda x: x["id"]), 1):
         try:
             updates[m["id"]] = {"title": m.get("title") or "(untitled)",
-                                "bullets": scan_page_comments(api, users, m, walk_cap=400)}
+                                "bullets": scan_page_comments(api, users, m)}
             state["comment_scans"][m["id"]] = now_iso()
             report["comments"]["pages_rescanned"] += 1
         except Budget:
