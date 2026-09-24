@@ -6,6 +6,7 @@ caller remembering to sleep. `Budget` and `ApiError` are part of the contract: e
 caller of a paginating helper has to handle both, and a helper that swallowed either
 would turn a truncated run into a silently short one.
 """
+import collections
 import http.client
 import json
 import time
@@ -52,6 +53,29 @@ class Truncated(ApiError):
         return self.msg
 
 
+def endpoint_class(method, path):
+    """Which family of the API a request belongs to, for the per-endpoint count.
+
+    Coarse on purpose: the question it answers is where a run's requests went
+    (how many to comments, how many to block walks), not which page they named."""
+    p = path.split("?", 1)[0]
+    if method == "POST" and p.endswith("/query"):
+        return "query"
+    if p == "/search":
+        return "search"
+    if p == "/comments":
+        return "comments"
+    if p.startswith("/blocks/"):
+        return "blocks/children" if p.endswith("/children") else "blocks"
+    if p.startswith("/pages/"):
+        return "pages/properties" if "/properties/" in p else "pages"
+    if p.startswith(("/databases/", "/data_sources/")):
+        return "databases"
+    if p.startswith("/users"):
+        return "users"
+    return "other"
+
+
 class Api:
     def __init__(self, token, rps, budget):
         self.token = token
@@ -59,6 +83,8 @@ class Api:
         self.budget = budget
         self.n = 0
         self.r429 = 0
+        # requests by endpoint_class, counted exactly where `n` is
+        self.by_endpoint = collections.Counter()
         self._next_slot = 0.0  # earliest monotonic time the next request may fire
 
     def check_budget(self):
@@ -98,6 +124,7 @@ class Api:
                 with urllib.request.urlopen(req, timeout=90) as r:
                     out = json.loads(r.read().decode("utf-8"))
                 self.n += 1
+                self.by_endpoint[endpoint_class(method, path)] += 1
                 if self.n % 200 == 0:
                     log(f"api requests: {self.n}")
                 return out
@@ -118,6 +145,7 @@ class Api:
                     time.sleep(min(2 ** attempt, 30))
                     continue
                 self.n += 1
+                self.by_endpoint[endpoint_class(method, path)] += 1
                 raise ApiError(e.code, eb)
             # A body that does not arrive whole belongs here and not with the
             # caller: a page cut mid-string surfaces as a JSON (or UTF-8) decode

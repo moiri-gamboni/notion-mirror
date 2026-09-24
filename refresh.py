@@ -1895,7 +1895,16 @@ def new_report(mode):
             # and "the assert found nothing" stay distinguishable in the report.
             "coverage": {},
             "phases": {},  # phase name -> API requests spent
+            # endpoint class (notion_core.api.endpoint_class) -> requests, for the
+            # whole run and per phase: where the requests went, not just how many
+            "requests_by_endpoint": {},
+            "phases_by_endpoint": {},
             "notes": []}
+
+
+def endpoint_line(counts):
+    """`comments 2882 · blocks/children 610 · …`, largest first."""
+    return " · ".join(f"{k} {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1]) if v)
 
 
 def report_md(r):
@@ -1905,6 +1914,11 @@ def report_md(r):
          f"Duration: {r['duration_s']}s"]
     if r.get("phases"):
         L += ["", "By phase: " + " · ".join(f"{k} {v}" for k, v in r["phases"].items() if v)]
+    if r.get("requests_by_endpoint"):
+        L += ["", "By endpoint: " + endpoint_line(r["requests_by_endpoint"])]
+        for k, v in (r.get("phases_by_endpoint") or {}).items():
+            if v:
+                L.append(f"- {k}: {endpoint_line(v)}")
     L += [""]
     d = r["dbs"]
     L += [f"## Databases — {d['checked']} checked, {len(d['changed'])} with changes"]
@@ -3253,11 +3267,14 @@ def main():
         """Run a phase, recording its API-request cost. Without this the only way
         to see where a 15,000-request run went is to reconstruct it from log
         timestamps."""
-        n0 = api.n
+        n0, e0 = api.n, collections.Counter(api.by_endpoint)
         try:
             return fn(*a, **kw)
         finally:
             report["phases"][name] = report["phases"].get(name, 0) + (api.n - n0)
+            per = report["phases_by_endpoint"].setdefault(name, {})
+            for k, v in (api.by_endpoint - e0).items():
+                per[k] = per.get(k, 0) + v
 
     try:
         if args.mode == "place":
@@ -3313,6 +3330,7 @@ def main():
         report["budget_exhausted"] = True
     finally:
         report["requests"] = api.n
+        report["requests_by_endpoint"] = dict(api.by_endpoint.most_common())
         report["rate429"] = api.r429
         report["duration_s"] = int(time.time() - t0)
         users.save()

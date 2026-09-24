@@ -7,6 +7,7 @@ days. A body that does not arrive whole is exactly as retryable as the
 connection errors beside it, and the sweeps that hit it are reads.
 """
 import http.client
+import io
 import json
 import os
 import sys
@@ -109,6 +110,39 @@ class TruncatedBody(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(self.api.n, 1)
         self.assertEqual(self.slept, [])
+
+
+class EndpointCount(TruncatedBody):
+    """Every counted request lands in exactly one endpoint class, so a run report
+    can say how many of its requests went to comments."""
+
+    def test_classes(self):
+        from notion_core.api import endpoint_class
+        cases = {("POST", "/databases/x/query"): "query",
+                 ("POST", "/data_sources/x/query"): "query",
+                 ("POST", "/search"): "search",
+                 ("GET", "/comments"): "comments",
+                 ("GET", "/blocks/x/children"): "blocks/children",
+                 ("GET", "/blocks/x"): "blocks",
+                 ("GET", "/pages/x"): "pages",
+                 ("GET", "/pages/x/properties/y"): "pages/properties",
+                 ("GET", "/databases/x"): "databases",
+                 ("GET", "/users/x"): "users",
+                 ("PATCH", "/something-new"): "other"}
+        for (method, path), want in cases.items():
+            self.assertEqual(endpoint_class(method, path), want, (method, path))
+
+    def test_counts_match_n_including_a_4xx_and_excluding_retries(self):
+        import urllib.error
+        err = urllib.error.HTTPError("u", 404, "nf", {}, io.BytesIO(b"{}"))
+        self.serve(whole({"ok": 1}), truncated(), whole({"ok": 1}), err)
+        self.api.get("/comments", params={"block_id": "b"})
+        self.api.get("/blocks/b/children")
+        with self.assertRaises(refresh.ApiError):
+            self.api.get("/pages/p")
+        self.assertEqual(dict(self.api.by_endpoint),
+                         {"comments": 1, "blocks/children": 1, "pages": 1})
+        self.assertEqual(sum(self.api.by_endpoint.values()), self.api.n)
 
 
 if __name__ == "__main__":

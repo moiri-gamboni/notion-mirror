@@ -114,6 +114,29 @@ class UnsharedRoundTripTest(MainCase):
         self.assertEqual(self.state_file("pending-discovery.json"), ["db:" + "b" * 32])
 
 
+class EndpointReportTest(MainCase):
+    """The report says where the requests went, per run and per phase."""
+
+    def test_by_endpoint_totals_and_per_phase(self):
+        def dbs(api, *a, **kw):
+            api.n += 3
+            api.by_endpoint.update({"query": 2, "comments": 1})
+
+        def content(api, *a, **kw):
+            api.n += 1
+            api.by_endpoint["search"] += 1
+            return {}
+        refresh.phase_dbs, refresh.phase_content = dbs, content
+        self.run_main("--mode", "daily")
+        r = self.state_file("last-run-report.json")
+        self.assertEqual(r["requests_by_endpoint"], {"query": 2, "comments": 1, "search": 1})
+        self.assertEqual(r["phases_by_endpoint"]["dbs"], {"query": 2, "comments": 1})
+        self.assertEqual(r["phases_by_endpoint"]["content"], {"search": 1})
+        md = open(os.path.join(self.state_dir, "last-run-report.md")).read()
+        self.assertIn("By endpoint: query 2 · comments 1 · search 1", md)
+        self.assertIn("- dbs: query 2 · comments 1", md)
+
+
 class DryRunReportTest(MainCase):
     """A dry run writes nothing, so its report is the entire deliverable."""
 
