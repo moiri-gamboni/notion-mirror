@@ -296,6 +296,7 @@ class RowsModeIsCheckedTest(MainCase):
         real = refresh.place_unplaced_pass
         self.addCleanup(setattr, refresh, "place_unplaced_pass", real)
         refresh.place_unplaced_pass = lambda *a, **kw: None
+        self.addCleanup(setattr, refresh, "load_meta_jsonl", refresh.load_meta_jsonl)
         refresh.load_meta_jsonl = lambda: ({}, [])
         self.run_main("--mode", "place", "--budget", "5")
         self.assertEqual(scanned, [])
