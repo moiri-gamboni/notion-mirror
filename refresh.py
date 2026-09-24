@@ -2975,7 +2975,12 @@ def _thread_of(bullet):
 
 def capture_parents():
     """discussion id32 -> the block or page id32 its thread sits on, from the
-    receiver's capture log (each record is one thread's parent and comments)."""
+    receiver's capture log (each record is one thread's parent and comments).
+
+    Only the receiver's own records count. The resolved-comment backfill wrote
+    its records into the same log with `captured_at: "backfill"` and the page as
+    the entity whatever block the thread sat on; listing that page would find
+    none of its block-anchored comments and mark every one resolved."""
     out = {}
     path = os.path.join(STATE, paths.CAPTURE)
     if not os.path.exists(path):
@@ -2984,6 +2989,8 @@ def capture_parents():
         try:
             e = json.loads(ln)
         except json.JSONDecodeError:
+            continue
+        if _parse_ts(e.get("captured_at")) is None:
             continue
         ent = undash(e.get("entity_id") or "")
         if len(ent) != 32:

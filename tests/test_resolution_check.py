@@ -99,6 +99,18 @@ class ResolutionCheck(MirrorSandbox):
         self.assertEqual(stats["from_captures"], 1)
         self.assertEqual(self.st["comment_parents"][B1], PAGE)
 
+    def test_a_backfill_record_is_no_evidence_of_a_threads_block(self):
+        """The resolved-comment backfill logged a thread's page as its entity,
+        whatever block it sat on; trusting it would list the wrong parent and
+        resolve every block-anchored comment on the page."""
+        with open(os.path.join(self.state_dir, "webhook-comments-capture.jsonl"), "a") as f:
+            f.write(json.dumps({"captured_at": "backfill", "page_id": PAGE, "entity_id": PAGE,
+                                "entity_type": "page", "anchor": "(page-level)",
+                                "comments": [{"id": refresh.dashed(Z1),
+                                              "discussion_id": refresh.dashed(Z1)}]}) + "\n")
+        self.assertNotIn(Z1, refresh.capture_parents())
+        self.assertEqual(refresh.capture_parents()[A1], BLOCK)
+
     def test_a_second_night_asks_no_lookups(self):
         self.run_check()
         self.api.calls.clear()
