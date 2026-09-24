@@ -2302,7 +2302,8 @@ def check_webhook_liveness(report):
         report["notes"].append(
             f"⚠ webhook feed silent for {quiet_h:.0f}h (largest gap ever observed: 1.7h) — check "
             f"`systemctl status notion-webhook` and the integration's webhook subscription. "
-            f"Until it is back, comments reach the mirror only through the rolling audit.")
+            f"Until it is back, new comments reach the mirror only through the rolling audit, "
+            f"which covers pages and rows already carrying comments.")
 
 
 # ------------------------------------------------- row-scoped refresh (--mode rows)
