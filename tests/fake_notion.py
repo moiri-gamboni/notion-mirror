@@ -170,7 +170,7 @@ class MirrorSandbox(unittest.TestCase):
 
     def state(self, **extra):
         st = {"rows": {}, "db404": {}, "not_a_db": {}, "unshared": {}, "probe_policy": {},
-              "content_since": "", "comment_scans": {}, "retry_pages": {},
+              "content_since": "", "comment_scans": {}, "retry_pages": {}, "page_walks": {},
               "comment_rows": {}}
         st.update(extra)
         return st

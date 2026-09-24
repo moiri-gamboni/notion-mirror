@@ -2602,7 +2602,9 @@ def phase_content(api, users, state, report, args, mode, discovered):
     # made moments AFTER we read a page can share its le with the version we
     # rendered — invisible to le-diffing forever. If a page's le collides with
     # (or trails just behind) the moment we last walked it, re-walk once; the
-    # fresh walk stamp clears the condition.
+    # fresh walk stamp clears the condition. The walk stamp is `page_walks`; a
+    # page not walked since that record began falls back to its comment scan,
+    # which every walk used to set.
     def _ts(s):
         try:
             return dt.datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=UTC)
@@ -2611,7 +2613,8 @@ def phase_content(api, users, state, report, args, mode, discovered):
     for pid, mm in meta.items():
         if pid in changed_objs or mm.get("parent_type") not in ("page_id", "block_id", "workspace"):
             continue
-        le, scan = _ts(mm.get("last_edited_time") or ""), _ts(state["comment_scans"].get(pid) or "")
+        le = _ts(mm.get("last_edited_time") or "")
+        scan = _ts(state["page_walks"].get(pid) or state["comment_scans"].get(pid) or "")
         if le and scan and scan - dt.timedelta(seconds=150) <= le <= scan:
             changed_objs[pid] = (mm, {"last_edited_time": "(minute-edge recheck)"})
 
@@ -2651,6 +2654,7 @@ def phase_content(api, users, state, report, args, mode, discovered):
                     report["notes"].append(f"page {i[:8]} '{m.get('title', '')[:40]}' captured partially (inaccessible child blocks) — will retry")
                 else:
                     state["retry_pages"].pop(i, None)
+                state["page_walks"][i] = now_iso()
                 for did, _t in w.child_dbs:
                     discovered.add("db:" + did)
                 # Comments are read here only for a page never scanned before,
@@ -3283,6 +3287,7 @@ def main():
         "content_since": jload(os.path.join(STATE, paths.LAST_RUN), {}).get("content_since"),
         "comment_scans": jload(os.path.join(STATE, "comment-scan.json"), {}),
         "retry_pages": jload(os.path.join(STATE, "retry-pages.json"), {}),
+        "page_walks": jload(os.path.join(STATE, "page-walks.json"), {}),
         "comment_rows": jload(os.path.join(STATE, "comment-rows.json"), {}),
     }
     rows_state_path = os.path.join(STATE, "rows-last-edited.json")
@@ -3376,6 +3381,7 @@ def main():
             jsave(rows_state_path, state["rows"])
             jsave(os.path.join(STATE, "comment-scan.json"), state["comment_scans"])
             jsave(os.path.join(STATE, "retry-pages.json"), state["retry_pages"])
+            jsave(os.path.join(STATE, "page-walks.json"), state["page_walks"])
             jsave(os.path.join(STATE, "comment-rows.json"), state["comment_rows"])
             jsave(os.path.join(STATE, "db-flags.json"),
                   {"db404": state["db404"], "not_a_db": state["not_a_db"],

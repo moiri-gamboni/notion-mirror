@@ -187,7 +187,7 @@ NOTION_MIRROR=/path/to/mirror python3 -m unittest discover tests
     changelog/YYYY-MM-DD.md   one note per refresh
     coverage/census.json, coverage/exclusions.json   tracked
     state/                    gitignored run state: last-run-report.{json,md}, last-run.json,
-                              rows-refresh-status.json, users.json, comment-scan.json,
+                              rows-refresh-status.json, users.json, comment-scan.json, page-walks.json,
                               comment-rows.json, props-probe-queue.json, webhook-secret,
                               webhook-events.jsonl, webhook-comments-capture.jsonl,
                               webhook-capture-offset.json, pending-ntfy.tsv, ...

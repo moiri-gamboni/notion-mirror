@@ -122,6 +122,24 @@ class ContentReWalk(MirrorSandbox):
         self.assertEqual(api.walked(), [PAGE])
         self.assertEqual(api.comment_calls(), [])
 
+    def test_a_rewalk_stamps_the_walk_so_the_minute_edge_recheck_settles(self):
+        """The recheck re-walks a page whose last_edited_time sits just before the
+        moment it was last read. It used to key on the comment scan, which every
+        walk set; walks no longer scan, so without their own stamp a page the
+        audit read a minute after an edit would be re-walked every night."""
+        self.write_page("", PAGE, "Page")
+        edited, audited = "2026-09-20T10:00:00.000Z", "2026-09-20T10:01:00.000Z"
+        self.write_meta(page_obj(PAGE, "Page", le=edited))
+        st = self.state(comment_scans={PAGE: audited})
+        unchanged = FakeNotion(search=[page_obj(PAGE, "Page", le=edited)],
+                               children={PAGE: [paragraph(BLOCK, "body")]})
+        self.run_content(unchanged, st)
+        self.assertEqual(unchanged.walked(), [PAGE], "the recheck fires once")
+        again = FakeNotion(search=[page_obj(PAGE, "Page", le=edited)],
+                           children={PAGE: [paragraph(BLOCK, "body")]})
+        self.run_content(again, st)
+        self.assertEqual(again.walked(), [], "and settles")
+
     def test_a_new_page_is_scanned_while_its_blocks_are_in_hand(self):
         api = self.api()
         st = self.state()
