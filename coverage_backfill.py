@@ -16,11 +16,10 @@ Three properties this tool exists to have:
 * **Resumable.** Per-id progress is written after *each* id to
   `_meta/state/coverage-backfill-progress.json` (gitignored, rebuildable), so an
   interrupted run loses at most the id in flight and a re-run re-fetches nothing.
-* **Budget-capped.** `--budget` is required for a writing run and is the same
-  request budget the nightly uses; a `Budget` stop is a normal exit, not a
-  failure. The nightly is capped at 15,000 requests and already goes PARTIAL on
-  a third of its runs — this must never be the thing that starves it, so it runs
-  as its own job with its own budget rather than riding the nightly's.
+* **Budget-capped.** `--budget` is required for a writing run; a `Budget` stop
+  is a normal exit, not a failure. The backfill is an operator's slice of work
+  that shares the integration's ~3 req/s with the nightly, so it runs as its own
+  job, sized by hand, rather than riding the nightly.
 * **Never silently dropping an id.** An id Notion refuses (404/403) moves into
   the exclusion file with a reason and a note recording the exact status and
   date, so it stops being retried *and* stays challengeable. Any other error is

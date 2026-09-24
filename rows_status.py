@@ -28,9 +28,9 @@ one:
     that names 44 rows and refreshes none exits 0 from `refresh.py` and leaves a
     clean tree, which reads exactly like a night with no edits.
   * **A budget-exhausted run is a failure.** It refreshed a prefix of the scope
-    and left the tail stale; if that recurs the tail is stale forever and the
-    success clock is the only thing that would ever say so. A one-off costs
-    nothing (the clock is an hour old, the threshold is six).
+    and left the tail stale. The engine no longer runs under a request budget
+    and never sets the flag; the rule stays while tasksync's `refresh-mirror`
+    still reports on it, and goes with that.
   * **Only an `ok` advances the success clock.** Skips and failures are recorded
     and counted, but the clock the dead-man reads moves only when rows were
     actually photographed.

@@ -306,7 +306,7 @@ class RecordTest(MirrorCase):
         self.page("Parent", self.db_standin(rid(1)))
         report, found = self.check()
         self.assertEqual(len(found), 1)
-        self.assertFalse(report["budget_exhausted"])
+        self.assertEqual(report["notes"][-1][:16], "coverage assert:")
 
     def test_a_missing_exclusion_file_is_not_an_error(self):
         self.page("Parent", self.db_standin(rid(1)))
@@ -316,36 +316,20 @@ class RecordTest(MirrorCase):
         self.assertEqual(len(report["coverage"]["findings"]), 1)
 
 
-class BudgetSkipTest(MirrorCase):
-    """`run_coverage_assert` is the nightly's entry point, and the arm it takes
-    is decided by one flag inside a 3,600-line `main()` — the one place nothing
-    else is tested. Both arms are pinned here."""
+class EntryPointTest(MirrorCase):
+    """`run_coverage_assert` is the nightly's entry point."""
 
-    def call(self, budget_exhausted):
+    def call(self):
         report = refresh.new_report("daily")
-        report["budget_exhausted"] = budget_exhausted
         found = refresh.run_coverage_assert(report, None, root=self.ws,
                                             exclusions_path=self.exclusions)
         return report, found
 
     def test_a_healthy_run_asserts(self):
         self.page("Parent", self.db_standin(rid(1)))
-        report, found = self.call(False)
+        report, found = self.call()
         self.assertEqual(len(found), 1)
         self.assertTrue(report["coverage"])
-
-    def test_a_budget_stopped_run_does_not(self):
-        self.page("Parent", self.db_standin(rid(1)))
-        report, found = self.call(True)
-        self.assertIsNone(found)
-        self.assertEqual(report["coverage"], {})
-
-    def test_the_skip_is_stated_not_silent(self):
-        """A missing coverage line must not be readable as a clean assert."""
-        report, _ = self.call(True)
-        self.assertTrue(any("coverage assert skipped" in n for n in report["notes"]))
-        self.assertNotIn("## Coverage", refresh.report_md(report))
-
 
 class NeverFailsTheRunTest(MirrorCase):
     """"It reports; it does not fail the run" has to hold for the assert's own

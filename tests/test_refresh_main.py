@@ -95,12 +95,12 @@ class UnsharedRoundTripTest(MainCase):
     def test_the_bucket_survives_a_run(self):
         self.write_state("db-flags.json",
                          {"not_a_db": {}, "db404": {}, "unshared": {"a" * 32: "2026-08-07"}})
-        self.run_main("--mode", "daily", "--budget", "5")
+        self.run_main("--mode", "daily")
         self.assertEqual(self.state_file("db-flags.json")["unshared"], {"a" * 32: "2026-08-07"})
 
     def test_a_flags_file_without_the_bucket_gains_an_empty_one(self):
         self.write_state("db-flags.json", {"not_a_db": {}, "db404": {}})
-        self.run_main("--mode", "daily", "--budget", "5")
+        self.run_main("--mode", "daily")
         self.assertEqual(self.state_file("db-flags.json")["unshared"], {})
 
     def test_an_unshared_id_is_left_out_of_pending_discovery(self):
@@ -111,7 +111,7 @@ class UnsharedRoundTripTest(MainCase):
         def discover(api, users, state, report, args, discovered):
             discovered.update({"db:" + "a" * 32, "db:" + "b" * 32})
         refresh.phase_discovery = discover
-        self.run_main("--mode", "daily", "--budget", "5")
+        self.run_main("--mode", "daily")
         self.assertEqual(self.state_file("pending-discovery.json"), ["db:" + "b" * 32])
 
 
@@ -158,13 +158,13 @@ class DryRunReportTest(MainCase):
         mid-sync or partially-restored tree is exactly where it would bite."""
         refresh.run_coverage_assert = self.real_coverage_assert
         self.page_with_standin()
-        self.run_main("--mode", "daily", "--budget", "5", "--dry-run")
+        self.run_main("--mode", "daily", "--dry-run")
         self.assertFalse(os.path.exists(os.path.join(self.state_dir, "coverage-floor.json")))
 
     def test_a_real_run_does_record_one(self):
         refresh.run_coverage_assert = self.real_coverage_assert
         self.page_with_standin()
-        self.run_main("--mode", "daily", "--budget", "5")
+        self.run_main("--mode", "daily")
         self.assertTrue(os.path.exists(os.path.join(self.state_dir, "coverage-floor.json")))
 
     def report_md(self, name):
@@ -202,19 +202,19 @@ class ContaminationScanPlacementTest(MainCase):
     def test_a_raising_scan_does_not_discard_the_comment_scan_record(self):
         self.seed_state()
         self.explode()
-        self.run_main("--mode", "daily", "--budget", "5")
+        self.run_main("--mode", "daily")
         self.assertEqual(len(self.state_file("comment-scan.json")), 2)
 
     def test_a_raising_scan_does_not_rewind_the_content_cursor(self):
         self.seed_state()
         self.explode()
-        self.run_main("--mode", "daily", "--budget", "5")
+        self.run_main("--mode", "daily")
         self.assertEqual(self.state_file("last-run.json")["content_since"], "NEW")
 
     def test_a_raising_scan_still_leaves_a_run_report(self):
         self.seed_state()
         self.explode()
-        self.run_main("--mode", "daily", "--budget", "5")
+        self.run_main("--mode", "daily")
         self.assertTrue(os.path.exists(os.path.join(self.state_dir, "last-run-report.json")))
 
     def test_a_scan_that_could_not_run_is_not_reported_as_clean(self):
@@ -222,7 +222,7 @@ class ContaminationScanPlacementTest(MainCase):
         whole failure class this assert exists to rule out."""
         self.seed_state()
         self.explode()
-        rc = self.run_main("--mode", "daily", "--budget", "5")
+        rc = self.run_main("--mode", "daily")
         note = next(n for n in self.state_file("last-run-report.json")["notes"]
                     if "contamination" in n)
         self.assertIn("UnicodeDecodeError", note)
@@ -230,7 +230,7 @@ class ContaminationScanPlacementTest(MainCase):
 
     def test_a_clean_scan_still_passes(self):
         self.seed_state()
-        rc = self.run_main("--mode", "daily", "--budget", "5")
+        rc = self.run_main("--mode", "daily")
         self.assertEqual(rc, 0)
         self.assertEqual(self.state_file("last-run-report.json")["comments"]
                          ["contamination_breaches"], 0)
@@ -240,7 +240,7 @@ class ContaminationScanPlacementTest(MainCase):
         exit status, so a breach must still be non-zero."""
         self.seed_state()
         refresh.build_comment_index = lambda: {"a copied thread": set(range(200))}
-        self.assertEqual(self.run_main("--mode", "daily", "--budget", "5"), 1)
+        self.assertEqual(self.run_main("--mode", "daily"), 1)
 
 
 class RowsModeIsCheckedTest(MainCase):
@@ -257,12 +257,12 @@ class RowsModeIsCheckedTest(MainCase):
     def test_a_rows_run_checks_for_contamination(self):
         scanned = []
         refresh.build_comment_index = lambda: scanned.append(1) or {}
-        self.run_main("--mode", "rows", "--budget", "5")
+        self.run_main("--mode", "rows")
         self.assertEqual(len(scanned), 1)
 
     def test_a_rows_run_reports_a_breach_and_exits_non_zero(self):
         refresh.build_comment_index = lambda: {"a copied thread": set(range(200))}
-        rc = self.run_main("--mode", "rows", "--budget", "5")
+        rc = self.run_main("--mode", "rows")
         self.assertEqual(rc, 1)
         self.assertEqual(self.state_file("last-run-report.rows.json")["comments"]
                          ["contamination_breaches"], 1)
@@ -276,7 +276,7 @@ class RowsModeIsCheckedTest(MainCase):
         refresh.place_unplaced_pass = lambda *a, **kw: None
         self.addCleanup(setattr, refresh, "load_meta_jsonl", refresh.load_meta_jsonl)
         refresh.load_meta_jsonl = lambda: ({}, [])
-        self.run_main("--mode", "place", "--budget", "5")
+        self.run_main("--mode", "place")
         self.assertEqual(scanned, [])
 
 
@@ -314,7 +314,7 @@ class MirrorLockTest(MainCase):
 
     def test_a_write_mode_refuses_while_another_writer_holds_the_lock(self):
         self.hold_the_lock()
-        rc = self.run_main("--mode", "rows", "--budget", "5")
+        rc = self.run_main("--mode", "rows")
         self.assertEqual(rc, 3)
         self.assertFalse(self.report_exists(), "a refused run must not write anything")
 
@@ -326,7 +326,7 @@ class MirrorLockTest(MainCase):
         err = io.StringIO()
         real, sys.stderr = sys.stderr, err
         try:
-            self.run_main("--mode", "daily", "--budget", "5")
+            self.run_main("--mode", "daily")
         finally:
             sys.stderr = real
         self.assertIn(self.lock, err.getvalue())
@@ -338,7 +338,7 @@ class MirrorLockTest(MainCase):
         it. Without the fd handshake this is the 'a mirror run is in progress'
         report where the only run in progress is the caller's own."""
         self.hold_it_as_the_wrapper_does()
-        self.assertEqual(self.run_main("--mode", "rows", "--budget", "5"), 0)
+        self.assertEqual(self.run_main("--mode", "rows"), 0)
         self.assertTrue(self.report_exists())
 
     def test_an_fd_marker_pointing_somewhere_else_is_not_believed(self):
@@ -349,7 +349,7 @@ class MirrorLockTest(MainCase):
         other = open(os.path.join(self.tmp, "not-the-lock"), "w")
         self.addCleanup(other.close)
         os.environ["NOTION_MIRROR_LOCK_FD"] = str(other.fileno())
-        self.assertEqual(self.run_main("--mode", "rows", "--budget", "5"), 3)
+        self.assertEqual(self.run_main("--mode", "rows"), 3)
 
     def test_the_lock_is_still_held_during_the_phases(self):
         """The lock has to cover the writes, not just the acquire. It is held on
@@ -369,14 +369,14 @@ class MirrorLockTest(MainCase):
             finally:
                 fh.close()
         refresh.phase_dbs = probe
-        self.assertEqual(self.run_main("--mode", "daily", "--budget", "5"), 0)
+        self.assertEqual(self.run_main("--mode", "daily"), 0)
         self.assertEqual(seen, ["held"])
 
     def test_a_dry_run_does_not_contend(self):
         """A dry run guards every write, so blocking it would only mean nobody can
         look at what the mirror would do while the nightly runs."""
         self.hold_the_lock()
-        self.assertEqual(self.run_main("--mode", "daily", "--budget", "5", "--dry-run"), 0)
+        self.assertEqual(self.run_main("--mode", "daily", "--dry-run"), 0)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,11 @@
-"""The Notion HTTP client: paced, budgeted, and Retry-After-honouring.
+"""The Notion HTTP client: paced, Retry-After-honouring, optionally budgeted.
 
 One client for every caller — the mirror engine, the one-shot scripts and tasksync —
 so the ~3 req/s shared integration cap is respected by construction rather than by each
-caller remembering to sleep. `Budget` and `ApiError` are part of the contract: every
-caller of a paginating helper has to handle both, and a helper that swallowed either
-would turn a truncated run into a silently short one.
+caller remembering to sleep. `ApiError` is part of the contract, and so is `Budget` for
+a caller that sets one: a helper that swallowed either would turn a truncated run into a
+silently short one. The mirror engine sets none; the standalone backfill tools and
+tasksync bound their own runs with it.
 """
 import collections
 import http.client
@@ -77,7 +78,7 @@ def endpoint_class(method, path):
 
 
 class Api:
-    def __init__(self, token, rps, budget):
+    def __init__(self, token, rps, budget=None):
         self.token = token
         self.interval = 1.0 / rps
         self.budget = budget
@@ -91,7 +92,7 @@ class Api:
         # With a message: callers print `{type}: {exc}` and a bare `Budget` reaches
         # a cron log as a type name and an empty string, which reads as a crash
         # rather than as the one condition an operator fixes by raising a number.
-        if self.n >= self.budget:
+        if self.budget is not None and self.n >= self.budget:
             raise Budget(f"request budget of {self.budget:g} spent after {self.n} "
                          "request(s); the run stops here and the next one resumes")
 

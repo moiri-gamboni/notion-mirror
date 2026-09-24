@@ -320,14 +320,14 @@ class RowBodyDiscovery(unittest.TestCase):
 
     def test_probe_row_harvests_the_inline_database(self):
         discovered = set()
-        enrichment, _capped = refresh.probe_row(
+        enrichment = refresh.probe_row(
             self.api, self.users, self.ROW, self.dir, self.report, discovered=discovered)
         self.assertIn("🗄️", enrichment)
         self.assertEqual(discovered, {"db:" + BRAINDUMP_DB})
 
     def test_probe_row_without_a_discovered_set_still_works(self):
         # phase_rows and any future caller may not carry one.
-        enrichment, _capped = refresh.probe_row(
+        enrichment = refresh.probe_row(
             self.api, self.users, self.ROW, self.dir, self.report)
         self.assertIn("High-Prio Funding Tasks", enrichment)
 

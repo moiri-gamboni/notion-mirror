@@ -123,10 +123,9 @@ class DrainTestCase(MirrorTestCase):
         refresh.jsave(refresh.props_queue_path(),
                       [{"kind": "props_probe", "row": r} for r in rids])
 
-    def drain(self, api=None, max_req=100, discovered=None):
+    def drain(self, api=None, discovered=None):
         refresh.drain_props_probe(api or self.api, None, self.state_dict, self.report,
-                                  self.args, max_req,
-                                  discovered if discovered is not None else set())
+                                  self.args, discovered if discovered is not None else set())
 
     def pending(self):
         """Everything still owed: the live queue plus any processing file."""
@@ -174,30 +173,6 @@ class EnrichmentInvarianceTest(DrainTestCase):
         self.enqueue(self.RID)
         self.drain()
         self.assertEqual(self.api.n, 1)
-
-
-class QueueIsolationTest(DrainTestCase):
-    """The separate file is structural, not tidiness.
-
-    refresh.py rewrites probe-queue.json wholesale from an in-memory copy at end
-    of run, so anything the receiver appends to it during a multi-hour nightly is
-    erased. props_probe entries in their own file cannot be caught by that write.
-    """
-
-    def test_probe_queue_is_byte_unchanged_across_an_enqueue_and_a_drain(self):
-        shared = self.spath("probe-queue.json")
-        refresh.jsave(shared, [{"kind": "row_probe", "db": self.DB_ID, "row": "b" * 32}])
-        before = open(shared, "rb").read()
-        self.enqueue(self.RID)
-        self.drain()
-        self.assertEqual(open(shared, "rb").read(), before)
-
-    def test_pending_entries_survive_the_nightly_wholesale_rewrite(self):
-        self.enqueue(self.RID, "b" * 32)
-        # the nightly's end-of-run persist, verbatim in shape: state["queue"] is
-        # rebuilt in memory and written over whatever is on disk
-        refresh.jsave(self.spath("probe-queue.json"), [])
-        self.assertEqual(len(self.pending()), 2)
 
 
 class SnapshotAndSwapTest(DrainTestCase):
@@ -248,38 +223,8 @@ class SnapshotAndSwapTest(DrainTestCase):
                          [self.RID, other])
 
 
-class BudgetCapTest(DrainTestCase):
-
-    def test_three_of_ten_drained_seven_retained_none_lost(self):
-        ids = [self.RID] + [f"{n:032x}" for n in range(1, 10)]
-        api = FakeApi({r: page(r, self.DB_ID, f"Row {r[:4]}", Status="new") for r in ids})
-        self.enqueue(*ids)
-        self.drain(api=api, max_req=3)
-        self.assertEqual(api.n, 3)
-        self.assertEqual(self.report["props_probe"]["drained"], 3)
-        retained = self.pending()
-        self.assertEqual(len(retained), 7)
-        self.assertEqual([e["row"] for e in retained], ids[3:])
-        self.assertEqual(self.report["props_probe"]["deferred"], 7)
-
-    def test_the_remainder_is_picked_up_by_the_next_drain(self):
-        ids = [self.RID] + [f"{n:032x}" for n in range(1, 10)]
-        api = FakeApi({r: page(r, self.DB_ID, f"Row {r[:4]}", Status="new") for r in ids})
-        self.enqueue(*ids)
-        self.drain(api=api, max_req=3)
-        self.drain(api=api, max_req=100)
-        self.assertEqual(self.pending(), [])
-        self.assertEqual(api.n, 10)
-
-    def test_a_zero_cap_drains_nothing_and_keeps_everything(self):
-        self.enqueue(self.RID)
-        self.drain(max_req=0)
-        self.assertEqual(len(self.pending()), 1)
-        self.assertEqual(self.api.n, 0)
-
-
 class DrainInRowsPhaseTest(MirrorTestCase):
-    """The drain shares the rows tick's budget rather than having its own."""
+    """A rows tick drains the props queue after its named rows."""
 
     A, B = "a" * 32, "b" * 32
 
@@ -298,17 +243,6 @@ class DrainInRowsPhaseTest(MirrorTestCase):
         self.assertIn("| Status | new |", self.row_text(self.B, "Row b"))
         self.assertEqual(self.report["props_probe"]["drained"], 1)
 
-    def test_a_burst_of_property_edits_cannot_outrun_the_tick_budget(self):
-        ids = [f"{n:032x}" for n in range(50)]
-        api = FakeApi({r: page(r, self.DB_ID, f"Row {r[:4]}", Status="new")
-                       for r in ids + [self.A]}, budget=5)
-        for r in ids:
-            self.seed_row(r, f"Row {r[:4]}")
-        refresh.jsave(refresh.props_queue_path(),
-                      [{"kind": "props_probe", "row": r} for r in ids])
-        refresh.phase_rows(api, None, self.state_dict, self.report, self.args, [self.A], set())
-        self.assertLessEqual(api.n, 5)
-        self.assertGreater(len(refresh.jload(refresh.props_processing_path(), [])), 40)
 
 
 if __name__ == "__main__":

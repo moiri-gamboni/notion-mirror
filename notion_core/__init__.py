@@ -6,14 +6,14 @@ not tasksync — so borrowing one regex costs neither a mounted mirror volume no
 engine's 3,300 lines. `../tests/test_notion_core_layering.py` reads the source to keep
 it that way.
 
-  api        the paced, budgeted, Retry-After-honouring HTTP client, and the two
-             exceptions every caller of a paginating helper must handle
+  api        the paced, Retry-After-honouring HTTP client (a request budget is
+             optional), and the exceptions a caller of a paginating helper handles
   richtext   Notion rich text -> markdown, span tier
   walker     Notion blocks -> markdown, block tier (tasksync subclasses `Walker`)
   md_blocks  markdown -> Notion blocks: the inverse of the two above
   flatten    property values -> cell strings, plus the 25-item property expansion
   rowmd      the row file's grammar: the marker, the region delimiters, the cid trailer
-  runcfg     per-mode request budgets and the `--rows` id parser
+  runcfg     the `--rows` id parser
   util       the primitives those share: time, id spelling, the run log
 
 `md_blocks` lived inside `notes/infra-task-triage/proposals/push.py` until 2026-08-10;

@@ -17,7 +17,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import refresh  # noqa: E402
-from fake_notion import (FakeNotion, FakeUsers, MirrorSandbox, comment, page_obj,  # noqa: E402
+from fake_notion import (FakeNotion, MirrorSandbox, comment, page_obj,  # noqa: E402
                          paragraph, rt)
 
 ROW, DB, BLOCK, PAGE = "a1" * 16, "c3" * 16, "e7" * 16, "f8" * 16

@@ -1,14 +1,18 @@
-"""How a mirror run is configured: the per-mode request budgets and the row-id parser.
+"""How a mirror run is configured: the row-id parser, and a retired budget table.
 
-Both are read rather than copied by anything that drives a run from outside — `tasks
-refresh-mirror` takes its `rows` budget and its id validation from here, so a caller
-cannot disagree with the run it is about to start.
+`parse_row_ids` is read rather than copied by anything that drives a run from outside —
+`tasks refresh-mirror` takes its id validation from here, so a caller cannot disagree
+with the run it is about to start.
 """
 import re
 
 from .util import undash
 
 
+# The engine enforces no request budget any more; nothing in this repository reads
+# this. It stays because tasksync's `refresh-mirror` still reads MODE_BUDGETS["rows"]
+# to pass as NOTION_REFRESH_BUDGET, which refresh.sh now ignores — remove it together
+# with that read.
 MODE_BUDGETS = {"daily": 15000, "full-comments": 90000, "place": 2000,
                 "validate": 3000, "rows": 300}
 

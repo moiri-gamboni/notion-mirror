@@ -145,5 +145,21 @@ class EndpointCount(TruncatedBody):
         self.assertEqual(sum(self.api.by_endpoint.values()), self.api.n)
 
 
+
+class OptionalBudget(unittest.TestCase):
+    """The engine runs with no request budget; the standalone tools still set one."""
+
+    def test_no_budget_never_stops(self):
+        api = refresh.Api("t", 1000.0)
+        api.n = 10 ** 9
+        api.check_budget()
+
+    def test_a_set_budget_still_stops(self):
+        api = refresh.Api("t", 1000.0, 3)
+        api.n = 3
+        with self.assertRaises(refresh.Budget):
+            api.check_budget()
+
+
 if __name__ == "__main__":
     unittest.main()

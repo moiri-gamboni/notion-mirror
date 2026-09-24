@@ -73,7 +73,7 @@ def probe(children, comments=None):
     report = refresh.new_report("test")
     d = tempfile.mkdtemp(prefix="a3-probe-")
     try:
-        enrichment, _capped = refresh.probe_row(api, USERS, refresh.dashed(ROW), d, report)
+        enrichment = refresh.probe_row(api, USERS, refresh.dashed(ROW), d, report)
     finally:
         shutil.rmtree(d, ignore_errors=True)
     return enrichment

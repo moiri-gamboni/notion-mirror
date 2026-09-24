@@ -73,11 +73,10 @@ class InitMode(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(self.mirror, "workspace", "_databases")))
         self.assertTrue(os.path.isdir(os.path.join(self.mirror, "_meta", "state")))
         # The next step, and a plain statement of what the first refresh costs: hours of
-        # full discovery, resumable across nights under a budget, and not narrowable.
+        # full discovery, and not narrowable.
         self.assertIn("refresh.sh daily", res.stdout)
         self.assertIn("FULL discovery", res.stdout)
-        self.assertIn("resumable", res.stdout)
-        self.assertIn("NOTION_REFRESH_BUDGET", res.stdout)
+        self.assertIn("takes\nhours", res.stdout)
         self.assertIn("--dbs cannot scope this", res.stdout)
 
     def test_init_refuses_when_the_mirror_already_exists(self):

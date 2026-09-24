@@ -93,7 +93,7 @@ class WriteThrough(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self._probe = refresh.probe_row
-        refresh.probe_row = lambda *a, **kw: ("\n\n## Body\n\n- body line\n", False)
+        refresh.probe_row = lambda *a, **kw: "\n\n## Body\n\n- body line\n"
         self.addCleanup(setattr, refresh, "probe_row", self._probe)
         self.state = {"queue": [], "comment_rows": {}}
         self.report = {"dbs": {"errors": []}}

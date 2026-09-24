@@ -164,8 +164,7 @@ def api():
     global _api
     with _lock:
         if _api is None:
-            # budget is a hard stop in refresh.Api; a daemon has no run to cap.
-            _api = refresh.Api(notion_token(), RPS, float("inf"))
+            _api = refresh.Api(notion_token(), RPS)
         return _api
 
 

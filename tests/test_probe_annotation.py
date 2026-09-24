@@ -119,36 +119,24 @@ class TestFailedProbe(AnnotationBase):
         self.assertNotIn("## Body", txt)
         self.assertEqual(refresh.existing_enrichment(self.path()).strip(), "")
 
-    def test_capped_block_scan_annotates_the_fresh_enrichment(self):
-        # The body came back fine but block-anchored comments were carried over
-        # unverified: the row is not fully current and must not read as if it is.
-        self.seed(BODY_AND_COMMENTS)
-        self.stub_probe(result=(FRESH, True))
-        txt = self.run_upsert()
-        self.assertIn("fresh body line", txt)
-        self.assertEqual(self.annotations(txt), [today()])
-        self.assertEqual(len(self.report["dbs"]["probe_annotated"]), 1)
-        self.assertIn("capped", self.report["dbs"]["probe_annotated"][0]["why"])
-
     def test_repeat_failure_keeps_the_date_it_was_first_missed(self):
         """The date means "first missed", matching the retention stamp's ≤date
-        semantics. Re-stamping today's on every run churned the tree: `capped`
-        is a function of body size, so a big-bodied row caps on every probe
-        forever, and the byte-difference write gate then rewrites the same rows
-        nightly with the date as their entire diff."""
+        semantics. Re-stamping today's on every run churned the tree: a row
+        that fails on every probe would be rewritten nightly with the date as
+        its entire diff."""
         self.seed("\n\n## Body\n\n_[probe failed 2020-01-01]_\n\n  stored body line\n")
         self.stub_probe(raises=refresh.ApiError(500, "boom"))
         txt = self.run_upsert()
         self.assertEqual(self.annotations(txt), ["2020-01-01"])
         self.assertIn("  stored body line", txt)
 
-    def test_a_still_capping_row_is_not_rewritten_the_next_day(self):
+    def test_a_still_failing_row_is_not_rewritten_the_next_day(self):
         """The churn itself, as an observable. Same-day re-annotation was already
         byte-stable; what was not is the day boundary — an unchanged row whose
-        scan caps again tomorrow rewrote with the date as its whole diff, every
+        probe fails again tomorrow rewrote with the date as its whole diff, every
         night, forever."""
         self.seed(refresh.annotate_probe_failure(FRESH, "2020-01-01"))
-        self.stub_probe(result=(FRESH, True))
+        self.stub_probe(raises=refresh.ApiError(500, "boom"))
         before = os.stat(self.path()).st_mtime_ns
         os.utime(self.path(), ns=(before - 10**9, before - 10**9))
         stamped = os.stat(self.path()).st_mtime_ns
@@ -175,7 +163,7 @@ class TestSuccessfulProbe(AnnotationBase):
 
     def test_success_clears_a_previous_annotation(self):
         self.seed("\n\n## Body\n\n_[probe failed 2020-01-01]_\n\n  stored body line\n")
-        self.stub_probe(result=(FRESH, False))
+        self.stub_probe(result=FRESH)
         txt = self.run_upsert()
         self.assertNotIn("probe failed", txt)
         self.assertIn("fresh body line", txt)
@@ -183,7 +171,7 @@ class TestSuccessfulProbe(AnnotationBase):
 
     def test_no_write_when_the_text_is_unchanged(self):
         self.seed(FRESH)
-        self.stub_probe(result=(FRESH, False))
+        self.stub_probe(result=FRESH)
         before = os.stat(self.path()).st_mtime_ns
         os.utime(self.path(), ns=(before - 10**9, before - 10**9))
         stamped = os.stat(self.path()).st_mtime_ns

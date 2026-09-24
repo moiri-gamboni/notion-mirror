@@ -76,12 +76,11 @@ class ProbeTestCase(unittest.TestCase):
         self.addCleanup(setattr, refresh, "_WEBHOOK_CAPTURES", None)
         refresh._WEBHOOK_CAPTURES = {}
 
-    def probe(self, comments, old_comments_body="", children=None, cap=25):
+    def probe(self, comments, old_comments_body="", children=None):
         api = FakeApi(comments=comments, children=children)
-        enrich, capped = refresh.probe_row(api, FakeUsers(), refresh.dashed(ROW), self.dir,
-                                           self.report, old_comments_body=old_comments_body,
-                                           block_comment_cap=cap)
-        return refresh.split_bullets(refresh.extract_comments_body(enrich), prefix="- _"), capped
+        enrich = refresh.probe_row(api, FakeUsers(), refresh.dashed(ROW), self.dir,
+                                   self.report, old_comments_body=old_comments_body)
+        return refresh.split_bullets(refresh.extract_comments_body(enrich), prefix="- _"), False
 
 
 class TestIdentityIsTheId(ProbeTestCase):
@@ -149,26 +148,6 @@ class TestIdentityIsTheId(ProbeTestCase):
         after, _ = self.probe({ROW: []}, old_comments_body="\n".join(before))
         self.assertTrue(after[0].endswith(refresh.cid_trailer("c1" * 16, "c1" * 16)),
                         f"trailer must stay last on the line: {after[0]!r}")
-
-    def test_a_capped_block_scan_carries_the_stored_record_over_by_id(self):
-        # The scan is skipped, so block-anchored bullets cannot be compared:
-        # they must survive verbatim, and the page-level one must not double.
-        stored = [refresh.stamp_cid("- _Someone (2026-06-01):_ block comment",
-                                    "c9" * 16, "c9" * 16),
-                  refresh.stamp_cid("- _Someone (2026-07-01):_ page comment",
-                                    "c1" * 16, "c1" * 16)]
-        blocks = [{"id": f"{i:032x}", "type": "paragraph", "has_children": False,
-                   "paragraph": {"rich_text": [{"plain_text": f"b{i}", "href": None}]}}
-                  for i in range(5)]
-        bullets, capped = self.probe({ROW: [comment("c1" * 16, "page comment")]},
-                                     old_comments_body="\n".join(stored),
-                                     children={ROW: blocks}, cap=2)
-        self.assertTrue(capped)
-        self.assertEqual(len(bullets), 2)
-        self.assertIn("block comment", "\n".join(bullets))
-        self.assertEqual(sorted(refresh.bullet_cid(b) for b in bullets),
-                         sorted(["c1" * 16, "c9" * 16]))
-
 
 class TestLegacyShim(ProbeTestCase):
     """Bullets whose id no source recovered. They keep the old text key, marked

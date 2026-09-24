@@ -5,26 +5,25 @@ Keeps workspace/ (pages, _databases/, _comments.md), _meta/ (pages-metadata.json
 content-pages.tsv) current against the live Notion workspace, touching only
 what changed so git diffs stay meaningful and API usage stays polite.
 
-Design (2026-07-16):
+Design:
   * DB rows: full per-DB /query sweep every run (~800 req for 74k rows). /v1/search
     provably misses whole DBs (64 of 407 at build time), so per-DB queries are the
     only reliable change/deletion source. CSVs re-render preserving existing column
     and row order (new rows appended by created_time) -> minimal diffs. A per-row
-    last_edited_time state file triggers body+comment re-probes for changed rows.
-  * Content pages: /v1/search desc early-stop daily (a few requests); weekly full
-    sweep rebuilds pages-metadata.jsonl + content-pages.tsv and detects deletions
-    (verified via GET /pages before deleting anything locally). Changed pages are
-    re-walked notion_walk-style with comment harvest + attachment download in the
-    same pass.
-  * Comments: re-scanned same-day for anything re-walked, PLUS a budgeted rolling
-    per-block scan every run (comments do NOT bump last_edited_time — verified
-    empirically — and the API has no global comments listing, so freshness costs
-    one request per block). Human content pages cycle ~weekly at the default
-    budget; machine-generated transcript subtrees (95% of block volume) cycle
-    slowly on 10% of the budget. _comments.md is a faithful snapshot of
-    unresolved comments; git history preserves resolved ones.
-  * Throttle ~2 req/s (shared 3 req/s integration cap), Retry-After honored,
-    per-run request budget with a persisted overflow queue for row probes.
+    last_edited_time state file triggers body re-probes for changed rows.
+  * Content pages: a full /v1/search sweep every run rebuilds pages-metadata.jsonl
+    + content-pages.tsv and detects deletions (verified via GET /pages before
+    deleting anything locally). Changed pages are re-walked notion_walk-style with
+    attachment download in the same pass. Automation subtrees are captured once
+    and never re-walked.
+  * Comments: do NOT bump last_edited_time and the API has no global listing, so
+    reading them costs one request per block. The webhook capture log is folded
+    in every run at no cost; a rolling per-block audit sized by count (1/3 of the
+    human pages, 1/4 of the comment-bearing rows per night) catches resolution,
+    which no event reports. Body probes carry comments over. Resolved comments
+    are kept, annotated.
+  * No request budget: the run does what the mirror needs, paced at --rps with
+    Retry-After honoured, and the report says where every request went.
 
 Formats replicate the Jul-08..10 build exactly (see README.md):
   _databases/<Title> <dbid32>/{_schema.json,_schema.md,<Title> <dbid32>.csv,
@@ -71,7 +70,7 @@ from notion_core.rowmd import (BODY_CLOSE, BODY_OPEN, CID_LEGACY, CID_MARK,  # n
                                annotate_resolved, bullet_cid, bullet_text_key, cid_trailer,
                                extract_comments_body, split_bullets, stamp_cid,
                                strip_comments_section)
-from notion_core.runcfg import MODE_BUDGETS, parse_row_ids  # noqa: F401
+from notion_core.runcfg import parse_row_ids  # noqa: F401
 from notion_core.util import UTC, dashed, log, undash  # noqa: F401
 from notion_core.walker import Comment, Walker  # noqa: F401
 # The data roots. Importing this asserts the mirror: the engine is its own clone, so
@@ -138,8 +137,6 @@ class Users:
                 d = self.api.get(f"/users/{uid}")
                 # build convention: unresolvable name -> the full dashed uuid
                 self.map[uid] = d.get("name") or ("(bot)" if d.get("type") == "bot" else uid)
-            except Budget:
-                return uid
             except ApiError:
                 # cache the fallback: deleted users 404 forever — never re-fetch
                 self.map[uid] = uid
@@ -267,7 +264,7 @@ def row_render_target(dirname, mds):
     listdir is O(n^2) on a big DB. Title falls back to the dir name minus its
     id suffix, for a dir whose _schema.json has not been written yet.
 
-    Pure — no API calls, so it cannot raise Budget or ApiError. Every request
+    Pure — no API calls, so it cannot raise ApiError. Every request
     a row costs stays visible at the call site, where the recovery lives.
     """
     dirpath = os.path.join(DBS, dirname)
@@ -448,15 +445,12 @@ def annotate_probe_failure(enrichment, day):
 
 
 def probe_row(api, users, page_id, dest_dir, report, old_comments_body="",
-              max_blocks=800, block_comment_cap=None, discovered=None, comments="scan",
-              last_scan=""):
+              max_blocks=800, discovered=None, comments="scan", last_scan=""):
     """Fetch body + comments for a DB row -> enrichment string ('' if none).
 
     `comments="scan"` reads them from the API: page-level, then one request per
-    block. Per-block comment scans are capped: big bodies (meeting transcripts)
-    would cost one request per block; page-level comments are always checked.
-    Old comments never vanish: capped scans keep them verbatim, full scans keep
-    resolved/deleted ones annotated.
+    block, however many blocks there are. Old comments never vanish: ones the
+    API stopped listing are kept, annotated resolved/deleted.
 
     `comments="carry"` reads none: the stored comments come over from disk with
     the row's webhook captures folded in (`fold_bullets`, against `last_scan`),
@@ -487,11 +481,9 @@ def probe_row(api, users, page_id, dest_dir, report, old_comments_body="",
         flat, _st = fold_bullets(split_bullets(old_comments_body, prefix="- _"),
                                  webhook_captures().get(undash(page_id), []), last_scan,
                                  users, True, {}, today)
-        return _finish_row_probe(w, parts, flat, page_id, dest_dir, report, max_blocks), False
+        return _finish_row_probe(w, parts, flat, page_id, dest_dir, report, max_blocks)
     page_comments = w.comments_for(page_id)
-    block_comments, capped = w.harvest_comments(cap=block_comment_cap)
-    if capped:
-        report["comments"]["row_block_scans_capped"] += 1
+    block_comments, _capped = w.harvest_comments()
     flat = []
     for _anchor, cs in ([("(page)", page_comments)] if page_comments else []) + block_comments:
         for c in cs:
@@ -501,17 +493,10 @@ def probe_row(api, users, page_id, dest_dir, report, old_comments_body="",
     # comment: with ids that is now decidable, and the invariant this whole
     # change buys is that no two surviving bullets on a row share an id
     flat = dedup_by_cid(flat)
-    if capped:
-        # block scan skipped: page-level comments are fresh, block-anchored ones
-        # can't be compared — carry the old record over verbatim
-        ids, texts = live_index(flat)
-        flat += [b for b in split_bullets(old_comments_body, prefix="- _")
-                 if not still_live(b, ids, texts)]
-    else:
-        flat = union_captured(flat, undash(page_id), users, row_format=True)
-        flat, kept = merge_comment_bullets(old_comments_body, flat, today, prefix="- _")
-        report["comments"]["retained"] += kept
-    return _finish_row_probe(w, parts, flat, page_id, dest_dir, report, max_blocks), capped
+    flat = union_captured(flat, undash(page_id), users, row_format=True)
+    flat, kept = merge_comment_bullets(old_comments_body, flat, today, prefix="- _")
+    report["comments"]["retained"] += kept
+    return _finish_row_probe(w, parts, flat, page_id, dest_dir, report, max_blocks)
 
 
 def _finish_row_probe(w, parts, flat, page_id, dest_dir, report, max_blocks):
@@ -706,8 +691,6 @@ def refresh_db(api, users, db_id, dirname, state, report, args, discovered):
 
     try:
         rows, ds_extra = query_db_rows(api, db_id)
-    except Budget:
-        raise
     except Truncated as e:
         # An incomplete row set must never reach the deletion diff below — every
         # missing row would be tombstoned and its artifacts removed.
@@ -871,8 +854,8 @@ def upsert_row_md(api, users, page, db_id, db_title, cols, dirpath, probe, state
     if probe:
         stored = (existing_enrichment(os.path.join(dirpath, old_name)) or "") if old_name else ""
         old_cb = extract_comments_body(stored)
-        # read before probing: a capped scan returns FRESH enrichment, so the
-        # previous annotation survives only on disk
+        # read before probing: the date a still-failing row was first missed
+        # survives only on disk
         first_missed = probe_annotation(stored)
         # A row the mirror has never enriched is scanned: whatever comments it
         # already carries predate any capture and would otherwise never be seen.
@@ -880,16 +863,13 @@ def upsert_row_md(api, users, page, db_id, db_title, cols, dirpath, probe, state
         mode = "scan" if probe == "scan" or not has_enrichment(stored) else "carry"
         scans = state.setdefault("comment_scans", {})
         try:
-            enrichment, capped = probe_row(api, users, page["id"], dirpath, report,
-                                           old_comments_body=old_cb, discovered=discovered,
-                                           comments=mode, last_scan=scans.get(rid, ""))
+            enrichment = probe_row(api, users, page["id"], dirpath, report,
+                                   old_comments_body=old_cb, discovered=discovered,
+                                   comments=mode, last_scan=scans.get(rid, ""))
             report.setdefault("comments", {}).setdefault("row_probes", {"carry": 0, "scan": 0})[mode] += 1
-            if mode == "scan" and not capped:
+            if mode == "scan":
                 scans[rid] = now_iso()
-            # a capped scan is a partial read: the body is fresh but block-anchored
-            # comments were carried over unverified, so the row is not current
-            stale = "block-comment scan capped" if capped else None
-            fully_read = not capped
+            fully_read = True
         except ApiError as e:
             report["dbs"]["errors"].append({"db": db_title, "op": f"probe {rid[:8]}", "error": str(e)[:160]})
             enrichment = None
@@ -901,13 +881,11 @@ def upsert_row_md(api, users, page, db_id, db_title, cols, dirpath, probe, state
     if stale:
         # The date is when the row was FIRST missed, not when it was last checked
         # — the same ≤date semantics the retention stamp carries. Re-stamping
-        # today's churned the tree: `capped` is a function of body size, so a
-        # big-bodied row caps on every probe forever and the byte-difference write
-        # gate rewrote it nightly with the date as its entire diff. Kept
-        # regardless of WHY the row is stale, since the annotation records no
-        # reason to compare against: a row capped in August that starts failing
-        # outright in September keeps the August date. That reads staler than it
-        # is, the safe direction, and the run's own reason is in the report.
+        # today's churned the tree: a row that fails on every probe would be
+        # rewritten nightly with the date as its entire diff. Kept regardless of
+        # WHY the row is stale, since the annotation records no reason to compare
+        # against. That reads staler than it is, the safe direction, and the
+        # run's own reason is in the report.
         enrichment = annotate_probe_failure(
             enrichment, first_missed or dt.datetime.now(UTC).strftime("%Y-%m-%d"))
         if probe_annotation(enrichment):
@@ -956,8 +934,8 @@ def capture_new_db(api, users, db_id, state, report, args):
         # on it, so flagging a 5xx retires a live database from the mirror for
         # good, on one bad night. Unflagged, the id stays in pending-discovery
         # and the next run retries it. It must not propagate either:
-        # phase_discovery catches only Budget, so an escaping ApiError would
-        # unwind past main's try and lose the night's uncommitted work.
+        # nothing above catches ApiError, so an escaping one would unwind past
+        # main's try and lose the night's uncommitted work.
         if e.code in (400, 403, 404):
             state["not_a_db"][db_id] = now_iso()
         else:
@@ -979,7 +957,7 @@ def capture_new_db(api, users, db_id, state, report, args):
            "data_sources": data_source_stubs(None, fresh=d.get("data_sources"))})
     try:
         rows, _ = query_db_rows(api, db_id)
-    except (ApiError, Budget) as e:
+    except ApiError as e:
         rows = []
         report["dbs"]["errors"].append({"db": title, "op": "new-capture", "error": str(e)[:200]})
     props = d.get("properties") or {}
@@ -1100,7 +1078,7 @@ def resolve_dest_dir(m, meta, page_index, row_index, api, users, depth=0):
     if pt == "block_id":
         try:
             b = api.get(f"/blocks/{dashed(par)}")
-        except (ApiError, Budget):
+        except ApiError:
             return None
         bp = b.get("parent", {}) or {}
         bpt = bp.get("type", "")
@@ -1132,12 +1110,12 @@ def _dir_of_page(pid, meta, page_index, row_index, api, users, depth):
     if pm is None:
         try:
             pm = meta_of(api.get(f"/pages/{dashed(pid)}"), users)
-        except (ApiError, Budget):
+        except ApiError:
             return None
     return resolve_dest_dir(pm, meta, page_index, row_index, api, users, depth)
 
 
-def place_unplaced_pass(api, users, meta, page_index, row_index, state, report, args, max_api=400):
+def place_unplaced_pass(api, users, meta, page_index, row_index, state, report, args):
     """Retry placement for everything in workspace/_unplaced — parents appear
     over time (metadata convergence, rows mirrored, blocks resolvable)."""
     unp = os.path.join(WS, "_unplaced")
@@ -1152,24 +1130,16 @@ def place_unplaced_pass(api, users, meta, page_index, row_index, state, report, 
         mm = ID32.search(f)
         if not mm:
             continue
-        if api.n - start >= max_api:
-            report["notes"].append("placement pass paused (per-run API cap); remainder next run")
-            break
         pid = mm.group(1)
         m = meta.get(pid)
         if m is None:
             try:
                 m = meta_of(api.get(f"/pages/{dashed(pid)}"), users)
                 meta[pid] = m
-            except Budget:
-                break
             except ApiError:
                 stuck += 1
                 continue
-        try:
-            dest = resolve_dest_dir(m, meta, page_index, row_index, api, users)
-        except Budget:
-            break
+        dest = resolve_dest_dir(m, meta, page_index, row_index, api, users)
         if not dest or os.path.abspath(dest) == os.path.abspath(unp):
             stuck += 1
             continue
@@ -1213,12 +1183,8 @@ def walk_content_page(api, users, page_meta, page_index, report, args, meta=None
     if old_path:
         dest_dir = os.path.dirname(old_path)
     else:
-        dest_dir = None
-        try:
-            dest_dir = resolve_dest_dir(page_meta, meta or {}, page_index,
-                                        row_index if row_index is not None else {}, api, users)
-        except Budget:
-            raise
+        dest_dir = resolve_dest_dir(page_meta, meta or {}, page_index,
+                                    row_index if row_index is not None else {}, api, users)
         if not dest_dir:
             dest_dir = os.path.join(WS, "_unplaced")
             os.makedirs(dest_dir, exist_ok=True)
@@ -1969,19 +1935,7 @@ def record_coverage_check(report, root=None, exclusions_path=None, state=None,
 
 
 def run_coverage_assert(report, state=None, root=None, exclusions_path=None, write_floor=True):
-    """The nightly's entry point: assert, or say why not.
-
-    Skipped after a budget wall on purpose. With phases cut short, a
-    referenced-but-absent id means "the run stopped before capturing it", not
-    "a new gap"; 35% of recent runs stop that way, and a finding list nobody
-    can trust is worse than no list. The skip is stated rather than silent —
-    silence would read as a clean assert, which is the failure mode the assert
-    exists to rule out."""
-    if report["budget_exhausted"]:
-        report["notes"].append(
-            "coverage assert skipped: request budget exhausted, so a referenced-but-absent "
-            "id would say where the run stopped rather than what the mirror is missing")
-        return None
+    """The nightly's entry point: assert, or say why it could not."""
     try:
         return record_coverage_check(report, root=root, exclusions_path=exclusions_path,
                                      state=state, write_floor=write_floor)
@@ -2126,13 +2080,11 @@ def regenerate_structure_md(max_children=20):
 # ---------------------------------------------------------------- report
 
 def new_report(mode):
-    return {"ts": now_iso(), "mode": mode, "requests": 0, "rate429": 0,
-            "budget_exhausted": False, "duration_s": 0,
+    return {"ts": now_iso(), "mode": mode, "requests": 0, "rate429": 0, "duration_s": 0,
             "dbs": {"checked": 0, "changed": [], "new": [], "deleted": [], "schema_changed": [],
                     "errors": [], "probe_annotated": []},
             "pages": {"changed": [], "new": [], "deleted": [], "renamed": [], "placed": [], "errors": []},
             "comments": {"pages_rescanned": 0, "added": 0, "retained": 0,
-                         "row_block_scans_capped": 0,
                          "contamination_breaches": 0},
             "attachments": {"downloaded": [], "failed": []},
             # Empty until the coverage assert runs, so "the assert did not run"
@@ -2153,8 +2105,7 @@ def endpoint_line(counts):
 
 def report_md(r):
     L = [f"# Notion mirror refresh — {r['ts']} ({r['mode']})", "",
-         f"API requests: {r['requests']} (429s: {r['rate429']})"
-         + (" — **request budget exhausted, run partial**" if r["budget_exhausted"] else ""),
+         f"API requests: {r['requests']} (429s: {r['rate429']})",
          f"Duration: {r['duration_s']}s"]
     if r.get("phases"):
         L += ["", "By phase: " + " · ".join(f"{k} {v}" for k, v in r["phases"].items() if v)]
@@ -2206,12 +2157,8 @@ def report_md(r):
     for e in p["errors"]:
         L.append(f"- ERROR page {e['id'][:8]} '{e['title'][:40]}': {e['error']}")
     c = r["comments"]
-    capnotes = []
-    if c.get("row_block_scans_capped"):
-        capnotes.append(f"{c['row_block_scans_capped']} big row bodies")
     L += ["", f"## Comments — {c['pages_rescanned']} pages rescanned, +{c['added']} new, "
-          f"{c['retained']} newly marked resolved/deleted (kept)"
-          + (f" (per-block scan skipped: {', '.join(capnotes)})" if capnotes else "")]
+          f"{c['retained']} newly marked resolved/deleted (kept)"]
     if c.get("contamination_breaches"):
         L.append(f"- **FAILED: {c['contamination_breaches']} comment text(s) attributed to more than "
                  f"{MAX_COMMENT_PAGES} pages** — see Notes")
@@ -2251,7 +2198,7 @@ def report_md(r):
     pp = r.get("props_probe")
     if pp:
         L += ["", f"## Property probes — {pp['drained']} drained, "
-              f"{pp['deferred']} deferred, {pp['dropped']} dropped"]
+              f"{pp['dropped']} dropped"]
         for e in pp["errors"][:10]:
             L.append(f"- ERROR row `{e['row'][:8]}`: {e['error']}")
     cov = r.get("coverage")
@@ -2313,7 +2260,7 @@ def check_webhook_liveness(report):
         report["notes"].append(
             f"⚠ webhook feed silent for {quiet_h:.0f}h (largest gap ever observed: 1.7h) — check "
             f"`systemctl status notion-webhook` and the integration's webhook subscription. "
-            f"The blind comment scan returns to full budget once the feed is 48h stale.")
+            f"Until it is back, comments reach the mirror only through the rolling audit.")
 
 
 # ------------------------------------------------- row-scoped refresh (--mode rows)
@@ -2396,14 +2343,12 @@ def props_processing_path():
     return os.path.join(STATE, "props-probe-queue.processing.json")
 
 
-def drain_props_probe(api, users, state, report, args, max_req, discovered=None):
+def drain_props_probe(api, users, state, report, args, discovered=None):
     """Drain `props-probe-queue.json`: one GET per row, property table + CSV line.
 
-    Its own file, for a structural reason. refresh.py rewrites probe-queue.json
-    wholesale from an in-memory copy at end of run, so anything the receiver
-    appends there during a multi-hour nightly is erased. Entries in a separate
-    file *cannot* be caught by that write — there is no lost-update window to
-    reason about rather than a narrow one to guard.
+    Its own file, written by the receiver alone, so no end-of-run rewrite of
+    some other state file from an in-memory copy can erase what arrived during
+    a multi-hour nightly.
 
     Snapshot-and-swap: rename the queue to a processing file and drain from
     there, so appends arriving mid-drain land in a fresh queue and are picked up
@@ -2419,18 +2364,16 @@ def drain_props_probe(api, users, state, report, args, max_req, discovered=None)
 
     Residual loss is bounded: a lost entry costs staleness until the nightly,
     whose per-DB query re-renders every row's property table wholesale. This
-    probe makes property freshness hourly; it is not the only path to it."""
+    probe makes property freshness hourly; it is not the only path to it. The
+    queue is deduped by row in the receiver, so a drain costs at most one
+    request per edited row whatever the event volume."""
     if args.dry_run:
         return
-    stats = report.setdefault("props_probe",
-                              {"drained": 0, "deferred": 0, "dropped": 0, "errors": []})
+    stats = report.setdefault("props_probe", {"drained": 0, "dropped": 0, "errors": []})
     qp, pp = props_queue_path(), props_processing_path()
-    start = api.n
     dirs = db_dirs()
     mds = {}
     for _pass in range(2):  # the orphan, then the live queue
-        if api.n - start >= max_req:
-            return  # nothing to spend: don't even move the queue file
         if not os.path.exists(pp):
             if not os.path.exists(qp):
                 return
@@ -2439,18 +2382,10 @@ def drain_props_probe(api, users, state, report, args, max_req, discovered=None)
             except OSError:
                 return
         batch = [e for e in jload(pp, []) if isinstance(e, dict) and e.get("row")]
-        rest = []
-        for n, item in enumerate(batch):
-            if api.n - start >= max_req:
-                rest = batch[n:]
-                break
+        for item in batch:
             rid = undash(item["row"])
             try:
                 page = api.get(f"/pages/{dashed(rid)}")
-            except Budget:
-                report["budget_exhausted"] = True
-                rest = batch[n:]
-                break
             except ApiError as e:
                 stats["dropped"] += 1
                 stats["errors"].append({"row": rid, "error": str(e)[:160]})
@@ -2481,19 +2416,11 @@ def drain_props_probe(api, users, state, report, args, max_req, discovered=None)
                 upsert_row_md(api, users, page, db_id, title, cols, dirpath, False,
                               state, report, args, md_idx=idx)
                 update_csv_row(csvp, cols, rid, page, users)
-            except Budget:
-                report["budget_exhausted"] = True
-                rest = batch[n:]
-                break
             except ApiError as e:
                 stats["dropped"] += 1
                 stats["errors"].append({"row": rid, "error": str(e)[:160]})
                 continue
             stats["drained"] += 1
-        if rest:
-            jsave(pp, rest)
-            stats["deferred"] += len(rest)
-            return
         try:
             os.remove(pp)
         except OSError:
@@ -2520,9 +2447,6 @@ def phase_rows(api, users, state, report, args, ids, discovered):
         rid = undash(rid)
         try:
             page = api.get(f"/pages/{dashed(rid)}")
-        except Budget:
-            report["budget_exhausted"] = True
-            break
         except ApiError as e:
             stats["errors"].append({"row": rid, "error": str(e)[:160]})
             continue
@@ -2547,9 +2471,6 @@ def phase_rows(api, users, state, report, args, ids, discovered):
             upsert_row_md(api, users, page, db_id, title, cols, dirpath, True,
                           state, report, args, md_idx=idx)
             update_csv_row(csvp, cols, rid, page, users)
-        except Budget:
-            report["budget_exhausted"] = True
-            break
         except ApiError as e:
             stats["errors"].append({"row": rid, "error": str(e)[:160]})
             continue
@@ -2557,10 +2478,7 @@ def phase_rows(api, users, state, report, args, ids, discovered):
         enr = existing_enrichment(os.path.join(dirpath, idx.get(rid, ""))) or ""
         for did in CHILD_DB_RE.findall(enr):
             discovered.add("db:" + did)
-    # Shares this tick's budget rather than holding an allowance of its own, so a
-    # burst of property edits cannot turn an hourly run into an unbounded one.
-    drain_props_probe(api, users, state, report, args,
-                      max(0, api.budget - api.n), discovered)
+    drain_props_probe(api, users, state, report, args, discovered)
     if not args.dry_run:
         persist_discovery(discovered)  # after the drain, which also discovers
 
@@ -2575,10 +2493,6 @@ def phase_dbs(api, users, state, report, args, discovered):
         report["dbs"]["checked"] += 1
         try:
             refresh_db(api, users, db_id, dirname, state, report, args, discovered)
-        except Budget:
-            report["budget_exhausted"] = True
-            report["notes"].append(f"budget hit during DB sweep at '{dirname}' — remaining DBs untouched this run")
-            return
         except Exception as e:  # noqa: BLE001 - one bad DB must not kill the sweep
             report["dbs"]["errors"].append({"db": dirname, "op": "refresh", "error": f"{type(e).__name__}: {e}"[:300]})
         if report["dbs"]["checked"] % 50 == 0:
@@ -2607,7 +2521,7 @@ def search_sweep(api, body, report):
 def phase_content(api, users, state, report, args, mode, discovered):
     """Full page-search sweep every run: change detection, metadata refresh, and
     deletion detection (DB rows cross-checked against the row sweep for free;
-    content pages get a verifying GET, capped, before any local delete)."""
+    content pages get a verifying GET before any local delete)."""
     meta, order = load_meta_jsonl()
     page_index = index_workspace_pages()
     row_index = row_md_global_index()
@@ -2634,7 +2548,6 @@ def phase_content(api, users, state, report, args, mode, discovered):
             "sort": {"timestamp": "last_edited_time", "direction": "ascending"}}, report):
         consider(r)
         seen_ids.add(undash(r["id"]))
-    verify_budget = 500
     for i, old in list(meta.items()):
         if i in seen_ids:
             continue
@@ -2646,11 +2559,6 @@ def phase_content(api, users, state, report, args, mode, discovered):
                 if i in order:
                     order.remove(i)
             continue
-        if verify_budget <= 0:
-            report["notes"].append("deletion-verification cap reached; remaining candidates deferred")
-            complete = False
-            break
-        verify_budget -= 1
         try:
             pg = api.get(f"/pages/{dashed(i)}")
             if pg.get("in_trash") or pg.get("archived"):
@@ -2665,10 +2573,6 @@ def phase_content(api, users, state, report, args, mode, discovered):
             meta.pop(i, None)
             if i in order:
                 order.remove(i)
-        except Budget:
-            report["budget_exhausted"] = True
-            complete = False
-            break
 
     # pages whose last walk failed or was partial: force a re-walk this run
     for pid, attempts in list(state["retry_pages"].items()):
@@ -2763,12 +2667,6 @@ def phase_content(api, users, state, report, args, mode, discovered):
                         page_index[i] = new_path
                         report["pages"]["renamed"].append({"from": os.path.relpath(path, WS),
                                                            "to": os.path.relpath(new_path, WS)})
-        except Budget:
-            report["budget_exhausted"] = True
-            report["notes"].append(f"budget hit during content pass at page {i[:8]} — since-marker held back, will re-detect")
-            complete = False
-            state["retry_pages"][i] = state["retry_pages"].get(i, 0)  # ensure re-walk next run
-            break
         except ApiError as e:
             report["pages"]["errors"].append({"id": i, "title": m.get("title", ""), "error": str(e)[:200]})
             state["retry_pages"][i] = state["retry_pages"].get(i, 0) + 1
@@ -2944,11 +2842,6 @@ def phase_full_comment_sweep(api, users, meta, state, report, args):
                                 "bullets": scan_page_comments(api, users, m)}
             state["comment_scans"][m["id"]] = now_iso()
             report["comments"]["pages_rescanned"] += 1
-        except Budget:
-            report["budget_exhausted"] = True
-            report["notes"].append(f"budget hit during comment sweep at {m['id'][:8]} ({n}/{len(content)})")
-            clean = False
-            break
         except ApiError as e:
             clean = False
             report["pages"]["errors"].append({"id": m["id"], "title": m.get("title", ""), "error": f"comment sweep: {e}"[:200]})
@@ -2971,10 +2864,9 @@ def skip_discovery(did, known, state):
     by hand on 2026-08-07 (from exclusions.json's `no_access` entries) — the
     backfill will not re-run to write them itself. The arm matters: 1,284 of
     the references to those ids sit in row bodies, which row-body discovery
-    re-harvests every night, so without it they are re-asked on every run
-    against a budget that already goes PARTIAL on a third of them — and each
-    answer writes a `not_a_db` flag that is simply wrong, since they are
-    unshared rather than linked views.
+    re-harvests every night, so without it they are re-asked on every run —
+    and each answer writes a `not_a_db` flag that is simply wrong, since they
+    are unshared rather than linked views.
     """
     return not did or did in known or did in state["not_a_db"] or did in state.get("unshared", {})
 
@@ -2987,12 +2879,8 @@ def phase_discovery(api, users, state, report, args, discovered):
         did = tag[3:]
         if skip_discovery(did, known, state):
             continue
-        try:
-            capture_new_db(api, users, did, state, report, args)
-            known.add(did)
-        except Budget:
-            report["budget_exhausted"] = True
-            return
+        capture_new_db(api, users, did, state, report, args)
+        known.add(did)
     # search-visible new databases
     try:
         for r in api.paginate("POST", "/search", body={
@@ -3003,8 +2891,6 @@ def phase_discovery(api, users, state, report, args, discovered):
             if not skip_discovery(did, known, state):
                 capture_new_db(api, users, did, state, report, args)
                 known.add(did)
-    except Budget:
-        report["budget_exhausted"] = True
     except ApiError as e:
         report["notes"].append(f"database discovery search failed: {e}"[:200])
 
@@ -3014,7 +2900,7 @@ def phase_schema_sweep(api, users, state, report, args):
     Detects DB renames and cascades them (dir, csv, row-md headers).
 
     One GET per database, so the phase costs as many requests as the mirror has
-    databases — 750 of the 2026-09-22 run's 11,229 — which is the budget any
+    databases — 750 of the 2026-09-22 run's 11,229 — which is the cost any
     second per-database fetch here would have to justify."""
     for db_id, dirname in sorted(db_dirs().items(), key=lambda kv: kv[1].lower()):
         dirpath = os.path.join(DBS, dirname)
@@ -3026,11 +2912,7 @@ def phase_schema_sweep(api, users, state, report, args):
         if csvf and os.path.exists(csvf):
             with open(csvf, newline="") as f:
                 nrows = max(0, sum(1 for _ in csv.reader(f)) - 1)
-        try:
-            _props, live_title = refresh_schema_files(api, dirpath, db_id, title, nrows, report)
-        except Budget:
-            report["budget_exhausted"] = True
-            return
+        _props, live_title = refresh_schema_files(api, dirpath, db_id, title, nrows, report)
         if args.dry_run or live_title == title:
             continue
         # rename cascade
@@ -3081,9 +2963,6 @@ def validate(api, users, args):
         cols = header[1:]
         try:
             rows, _ = query_db_rows(api, db_id)
-        except Budget:
-            print(f"[stop] request budget hit before {dirname}")
-            break
         except ApiError as e:
             print(f"[skip] {dirname}: {e}")
             continue
@@ -3179,11 +3058,8 @@ def validate_refetch(api, users, args):
     for dirpath, fname, rid, disk in sample:
         n0 = api.n
         try:
-            fresh, capped = probe_row(api, users, rid, dirpath, report,
-                                      old_comments_body=extract_comments_body(disk))
-        except Budget:
-            print("[stop] request budget hit")
-            break
+            fresh = probe_row(api, users, rid, dirpath, report,
+                              old_comments_body=extract_comments_body(disk))
         except ApiError as e:
             print(f"[skip] {fname[:60]}: {e}")
             continue
@@ -3191,7 +3067,7 @@ def validate_refetch(api, users, args):
         ok = mask_stamps(fresh) == mask_stamps(disk)
         mismatch += not ok
         print(f"[{'ok      ' if ok else 'MISMATCH'}] {os.path.basename(dirpath)[:34]}/"
-              f"{fname[:44]} req={api.n - n0}{' capped' if capped else ''}")
+              f"{fname[:44]} req={api.n - n0}")
         if not ok:
             dl = list(difflib.unified_diff(mask_stamps(disk).split("\n"),
                                            mask_stamps(fresh).split("\n"),
@@ -3317,7 +3193,6 @@ def main():
                          "weekly/monthly are legacy aliases (daily / full-comments)")
     ap.add_argument("--rows", default="", help="--mode rows: page ids, comma- or space-separated")
     ap.add_argument("--rps", type=float, default=3.0)  # Notion's ~3 req/s per-token cap
-    ap.add_argument("--budget", type=int, default=0, help="max API requests (0 = mode default)")
     ap.add_argument("--dbs", default="", help="only DBs whose dir name/id contains this")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--skip-dbs", action="store_true", help="skip the DB row sweep")
@@ -3368,8 +3243,7 @@ def main():
         except MirrorLocked as e:
             print(f"refresh.py: {e}", file=sys.stderr)
             return 3
-    budget = args.budget or MODE_BUDGETS[args.mode]
-    api = Api(token, args.rps, budget)
+    api = Api(token, args.rps)
     users = Users(api)
     t0 = time.time()
 
@@ -3423,7 +3297,7 @@ def main():
         if args.mode == "place":
             meta, _order = load_meta_jsonl()
             place_unplaced_pass(api, users, meta, index_workspace_pages(),
-                                row_md_global_index(), state, report, args, max_api=1500)
+                                row_md_global_index(), state, report, args)
         elif args.mode == "rows":
             run_phase("rows", phase_rows, api, users, state, report, args, row_ids, discovered)
         else:
@@ -3434,12 +3308,10 @@ def main():
                 run_phase("dbs", phase_dbs, api, users, state, report, args, discovered)
             # After the sweep, not before: entries queued before it are already
             # covered (the per-DB query re-renders every property table), while
-            # entries that arrived during a multi-hour sweep are not. The cap
-            # bounds the redundant remainder either way. The nightly drains this
-            # queue at all so that a broken hourly job leaves a bounded file
-            # rather than an unbounded one.
-            run_phase("props", drain_props_probe, api, users, state, report, args,
-                      int(os.environ.get("NOTION_REFRESH_PROPS_BUDGET", "1000")), discovered)
+            # entries that arrived during a multi-hour sweep are not. The nightly
+            # drains this queue at all so that a broken hourly job leaves a
+            # bounded file rather than an unbounded one.
+            run_phase("props", drain_props_probe, api, users, state, report, args, discovered)
             meta = None
             if not args.skip_content:
                 meta = run_phase("content", phase_content, api, users, state, report, args,
@@ -3466,8 +3338,6 @@ def main():
                                  or report["pages"]["renamed"] or report["pages"]["placed"]):
             if regenerate_structure_md():
                 report["notes"].append("structure.md regenerated (tree changed)")
-    except Budget:
-        report["budget_exhausted"] = True
     finally:
         report["requests"] = api.n
         report["requests_by_endpoint"] = dict(api.by_endpoint.most_common())
@@ -3495,7 +3365,7 @@ def main():
                    "unshared": state["unshared"], "probe_policy": state["probe_policy"]})
             jsave(os.path.join(STATE, paths.LAST_RUN),
                   {"content_since": state["content_since"], "ts": report["ts"], "mode": args.mode})
-        # In the finally on purpose: a run that exhausted its budget still wrote
+        # In the finally on purpose: a run that failed partway still wrote
         # comments, so it still has to be checked. LAST in the finally, and
         # wrapped, because it is the only thing here that reads the whole corpus:
         # `build_comment_index` guards its reads with `except OSError` alone, so
@@ -3534,8 +3404,7 @@ def main():
                        or report["comments"]["added"] or report["comments"]["retained"]
                        or report.get("rows", {}).get("refreshed")
                        or report.get("props_probe", {}).get("drained"))
-    print(json.dumps({"changes": has_changes, "requests": api.n,
-                      "budget_exhausted": report["budget_exhausted"]}))
+    print(json.dumps({"changes": has_changes, "requests": api.n}))
     return 0
 
 

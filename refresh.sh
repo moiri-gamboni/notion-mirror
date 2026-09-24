@@ -31,7 +31,7 @@
 # directory that is not a built mirror). The same file carries
 # NOTION_MIRROR_AUTOMATION_SUBTREES, read by refresh.py.
 #
-# Env knobs: NOTION_REFRESH_RPS (3.0) · NOTION_REFRESH_BUDGET (mode default)
+# Env knobs: NOTION_REFRESH_RPS (3.0)
 #            NOTION_REFRESH_MODEL (opus) · NOTION_REFRESH_EFFORT (medium)
 #            NOTION_REFRESH_ANALYSIS_TIMEOUT (3600) · NOTION_REFRESH_PUSH (0)
 #            NOTION_REFRESH_DEFER_NTFY (0) · NOTION_REFRESH_NTFY_DIGEST (1)
@@ -140,10 +140,9 @@ run the first refresh:
 
 Be honest about the cost: the first run performs FULL discovery over every
 database shared with the integration, at Notion's ~3 req/s cap, which takes
-hours. Set NOTION_REFRESH_BUDGET to cap a single run's requests and make it
-resumable across nights — a budget-cut run stops cleanly and the next one
-continues. A partially built mirror is incomplete, and the per-DB tools refuse
-against the missing directories until discovery finishes.
+hours, and runs until it is done. A partially built mirror is incomplete, and
+the per-DB tools refuse against the missing directories until discovery
+finishes.
 
 --dbs cannot scope this: it is a single substring match that filters only the
 validate/refetch probe paths, never discovery, so it cannot narrow a cold-start
@@ -374,9 +373,7 @@ export NOTION_TOKEN
 # --- refresh ----------------------------------------------------------------
 say "refresh start: mode=$MODE"
 RPS="${NOTION_REFRESH_RPS:-3.0}"
-BUDGET_ARG=()
-[ -n "${NOTION_REFRESH_BUDGET:-}" ] && BUDGET_ARG=(--budget "$NOTION_REFRESH_BUDGET")
-if ! OUT="$(python3 "$TOOLS/refresh.py" --mode "$MODE" --rps "$RPS" "${BUDGET_ARG[@]}" "${ROWS_ARG[@]}")"; then
+if ! OUT="$(python3 "$TOOLS/refresh.py" --mode "$MODE" --rps "$RPS" "${ROWS_ARG[@]}")"; then
     guard_out failed refresh_failed "refresh.py exited non-zero (mode=$MODE); see log"
 fi
 say "refresh.py: $OUT"
@@ -405,9 +402,7 @@ r = json.load(open(sys.argv[1]))
 rw, pp = r.get("rows") or {}, r.get("props_probe") or {}
 bits = [f"{len(rw.get('refreshed') or [])}/{rw.get('requested', 0)} rows"]
 if pp.get("drained"): bits.append(f"{pp['drained']} props probes")
-if pp.get("deferred"): bits.append(f"{pp['deferred']} deferred")
 if rw.get("errors") or pp.get("errors"): bits.append(f"{len(rw.get('errors') or []) + len(pp.get('errors') or [])} errors")
-if r.get("budget_exhausted"): bits.append("PARTIAL (budget)")
 bits.append(f"{r['requests']} req")
 print("; ".join(bits))
 EOF
@@ -427,9 +422,8 @@ EOF
         say "rows refresh: no changes ($ROWS_SUMMARY)"
     fi
     # The marker the dead-man reads. The verdict comes from the run's own report
-    # rather than from this script's exit status, because the two ways a rows run
-    # can finish cleanly while having done nothing — every named row refused, or
-    # the budget exhausted partway — both exit 0 and leave a clean tree. See
+    # rather than from this script's exit status, because a rows run that refused
+    # every named row exits 0 and leaves a clean tree. See
     # rows_status.verdict_from_report.
     python3 "$TOOLS/rows_status.py" --state-dir "$STATE" --from-report "$STATE/last-run-report.rows.json" || exit 1
     exit 0
@@ -463,7 +457,6 @@ np_, cp = len(p["new"]), len(p["changed"])
 if np_ or cp: bits.append(f"{cp} pages changed, {np_} new")
 if p["deleted"]: bits.append(f"{len(p['deleted'])} pages deleted")
 if c.get("added") or c.get("retained"): bits.append(f"comments +{c.get('added',0)}/~{c.get('retained',0)} resolved-kept")
-if r.get("budget_exhausted"): bits.append("PARTIAL (budget)")
 bits.append(f"{r['requests']} req · {max(1, r['duration_s'] // 60)}m")
 print("; ".join(bits) or "changes")
 EOF

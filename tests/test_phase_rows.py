@@ -86,11 +86,11 @@ class MirrorTestCase(unittest.TestCase):
 
     # -- fixtures -----------------------------------------------------------
 
-    def stub_probe(self, enrichment="\n\n## Body\n\n  fresh body\n", capped=False):
+    def stub_probe(self, enrichment="\n\n## Body\n\n  fresh body\n"):
         def _stub(api, users, page_id, dest_dir, report, old_comments_body="",
                   max_blocks=800, block_comment_cap=25, discovered=None, **kw):
             self.probed.append(refresh.undash(page_id))
-            return enrichment, capped
+            return enrichment
         refresh.probe_row = _stub
 
     def write_csv(self, rows):
@@ -181,14 +181,6 @@ class ScopeTest(MirrorTestCase):
         self.run_rows(self.api, ["f" * 32, self.A])
         self.assertEqual(self.report["rows"]["errors"][0]["row"], "f" * 32)
         self.assertEqual(self.probed, [self.A], "the run continues past a dead id")
-
-    def test_budget_exhaustion_stops_cleanly(self):
-        api = FakeApi({rid: page(rid, self.DB_ID, f"Row {rid[0]}")
-                       for rid in (self.A, self.B, self.C)}, budget=2)
-        self.run_rows(api, [self.A, self.B, self.C])
-        self.assertTrue(self.report["budget_exhausted"])
-        self.assertEqual(len(self.report["rows"]["refreshed"]), 2)
-
 
 class ProbePolicyOverrideTest(MirrorTestCase):
     """A named row is probed whatever db_probe_policy would say about its DB."""
@@ -305,12 +297,6 @@ class ReportStemTest(unittest.TestCase):
 
 
 class ModeWiringTest(unittest.TestCase):
-
-    def test_rows_is_an_accepted_mode_with_a_budget(self):
-        # :budget is a bare dict index, so a missing key is a KeyError at startup
-        # rather than a mode that runs unbudgeted.
-        self.assertIn("rows", refresh.MODE_BUDGETS)
-        self.assertGreater(refresh.MODE_BUDGETS["rows"], 0)
 
     def test_row_ids_are_parsed_and_validated(self):
         a, b = "a" * 32, "b" * 32
