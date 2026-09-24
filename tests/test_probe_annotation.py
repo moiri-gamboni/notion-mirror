@@ -52,7 +52,7 @@ class AnnotationBase(unittest.TestCase):
 
     def stub_probe(self, result=None, raises=None):
         def _stub(api, users, page_id, dest_dir, report, old_comments_body="",
-                  max_blocks=800, block_comment_cap=25, discovered=None):
+                  max_blocks=800, block_comment_cap=25, discovered=None, **kw):
             if raises is not None:
                 raise raises
             return result

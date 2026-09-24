@@ -447,12 +447,21 @@ def annotate_probe_failure(enrichment, day):
 
 
 def probe_row(api, users, page_id, dest_dir, report, old_comments_body="",
-              max_blocks=800, block_comment_cap=25, discovered=None):
+              max_blocks=800, block_comment_cap=25, discovered=None, comments="scan",
+              last_scan=""):
     """Fetch body + comments for a DB row -> enrichment string ('' if none).
-    Per-block comment scans are capped: big bodies (meeting transcripts) would
-    cost one request per block; page-level comments are always checked. Old
-    comments never vanish: capped scans keep them verbatim, full scans keep
-    resolved/deleted ones annotated."""
+
+    `comments="scan"` reads them from the API: page-level, then one request per
+    block. Per-block comment scans are capped: big bodies (meeting transcripts)
+    would cost one request per block; page-level comments are always checked.
+    Old comments never vanish: capped scans keep them verbatim, full scans keep
+    resolved/deleted ones annotated.
+
+    `comments="carry"` reads none: the stored comments come over from disk with
+    the row's webhook captures folded in (`fold_bullets`, against `last_scan`),
+    the way a props probe carries the body. A body edit says nothing about the
+    row's comments, which reach the mirror through the capture log and, for
+    resolution, the rolling audit."""
     w = Walker(api, users, max_blocks=max_blocks)
     body_lines = []
     # indent 0: a row body's top level is the file's left margin, so leading
@@ -468,14 +477,20 @@ def probe_row(api, users, page_id, dest_dir, report, old_comments_body="",
     if discovered is not None:
         for did, _t in w.child_dbs:
             discovered.add("db:" + did)
-    page_comments = w.comments_for(page_id)
-    block_comments, capped = w.harvest_comments(cap=block_comment_cap)
-    if capped:
-        report["comments"]["row_block_scans_capped"] += 1
     parts = []
     body = "\n".join(body_lines).strip("\n")
     if body.strip():
         parts += body_section_lines(body)
+    today = dt.datetime.now(UTC).strftime("%Y-%m-%d")
+    if comments == "carry":
+        flat, _st = fold_bullets(split_bullets(old_comments_body, prefix="- _"),
+                                 webhook_captures().get(undash(page_id), []), last_scan,
+                                 users, True, {}, today)
+        return _finish_row_probe(w, parts, flat, page_id, dest_dir, report, max_blocks), False
+    page_comments = w.comments_for(page_id)
+    block_comments, capped = w.harvest_comments(cap=block_comment_cap)
+    if capped:
+        report["comments"]["row_block_scans_capped"] += 1
     flat = []
     for _anchor, cs in ([("(page)", page_comments)] if page_comments else []) + block_comments:
         for c in cs:
@@ -493,9 +508,13 @@ def probe_row(api, users, page_id, dest_dir, report, old_comments_body="",
                  if not still_live(b, ids, texts)]
     else:
         flat = union_captured(flat, undash(page_id), users, row_format=True)
-        today = dt.datetime.now(UTC).strftime("%Y-%m-%d")
         flat, kept = merge_comment_bullets(old_comments_body, flat, today, prefix="- _")
         report["comments"]["retained"] += kept
+    return _finish_row_probe(w, parts, flat, page_id, dest_dir, report, max_blocks), capped
+
+
+def _finish_row_probe(w, parts, flat, page_id, dest_dir, report, max_blocks):
+    """The enrichment string from a walked body and its final comment bullets."""
     if flat:
         parts += comments_section_lines(flat)
     if w.truncated:
@@ -506,8 +525,8 @@ def probe_row(api, users, page_id, dest_dir, report, old_comments_body="",
             prefix_for=lambda bid, i, pid=undash(page_id)[:8]: f"{pid}-{i}_",
             report=report)
     if not parts:
-        return "", capped
-    return "\n\n" + "\n".join(parts).strip("\n") + "\n", capped
+        return ""
+    return "\n\n" + "\n".join(parts).strip("\n") + "\n"
 
 
 def db_probe_policy(dirpath, nrows, state, db_id):
@@ -835,6 +854,9 @@ def refresh_db(api, users, db_id, dirname, state, report, args, discovered):
 
 def upsert_row_md(api, users, page, db_id, db_title, cols, dirpath, probe, state, report, args,
                   md_idx=None, discovered=None):
+    """Re-render one row file. `probe`: False carries the enrichment over
+    verbatim; True walks the body and carries the comments (scanning them only
+    on a row never enriched before); "scan" also reads the comments per block."""
     rid = undash(page["id"])
     idx = index_row_mds(dirpath) if md_idx is None else md_idx
     old_name = idx.get(rid)
@@ -851,9 +873,18 @@ def upsert_row_md(api, users, page, db_id, db_title, cols, dirpath, probe, state
         # read before probing: a capped scan returns FRESH enrichment, so the
         # previous annotation survives only on disk
         first_missed = probe_annotation(stored)
+        # A row the mirror has never enriched is scanned: whatever comments it
+        # already carries predate any capture and would otherwise never be seen.
+        # Once it has been, a body-triggered probe carries its comments over.
+        mode = "scan" if probe == "scan" or not has_enrichment(stored) else "carry"
+        scans = state.setdefault("comment_scans", {})
         try:
             enrichment, capped = probe_row(api, users, page["id"], dirpath, report,
-                                           old_comments_body=old_cb, discovered=discovered)
+                                           old_comments_body=old_cb, discovered=discovered,
+                                           comments=mode, last_scan=scans.get(rid, ""))
+            report.setdefault("comments", {}).setdefault("row_probes", {"carry": 0, "scan": 0})[mode] += 1
+            if mode == "scan" and not capped:
+                scans[rid] = now_iso()
             # a capped scan is a partial read: the body is fresh but block-anchored
             # comments were carried over unverified, so the row is not current
             stale = "block-comment scan capped" if capped else None
@@ -2801,11 +2832,13 @@ def phase_content(api, users, state, report, args, mode, discovered):
                     state["retry_pages"].pop(i, None)
                 for did, _t in w.child_dbs:
                     discovered.add("db:" + did)
-                # the scope rule's other half: an automation page (here only at
-                # first sight) is never comment-scanned, so its _comments.md
-                # section, if any, is left untouched
+                # Comments are read here only for a page never scanned before,
+                # while its blocks are in hand: an edit says nothing about the
+                # comments, which arrive through the webhook fold and whose
+                # resolution the rolling audit reads. And never under an
+                # automation subtree (the scope rule's other half).
                 n_comments = 0
-                if not _is_automation(i, page_index):
+                if i not in state["comment_scans"] and not _is_automation(i, page_index):
                     bc, _capped = w.harvest_comments()
                     pl = w.comments_for(dashed(i))
                     comment_updates[i] = {"title": m.get("title") or "(untitled)",
