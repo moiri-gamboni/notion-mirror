@@ -103,8 +103,8 @@ The parser in `notion_core/md_blocks.py` inverts the renderer; a rendering chang
 | `NOTION_REFRESH_COMMENT_BUDGET_WEBHOOK` | `1500` | The shard's budget while webhook events are flowing. |
 | `NOTION_REFRESH_QUEUE_BUDGET` | `max(1000, budget // 3)` | Cap on the webhook probe queue per run. |
 | `NOTION_REFRESH_AUTOMATION_WALK_CAP` | `40` | Per-page request cap inside the automation subtrees. |
-| `NOTION_REFRESH_MODEL` | `claude-sonnet-5` | Model for the changelog analysis. |
-| `NOTION_REFRESH_EFFORT` | `xhigh` | Its `--effort`. |
+| `NOTION_REFRESH_MODEL` | `opus` | Model for the changelog analysis (the CLI alias, so the latest Opus). |
+| `NOTION_REFRESH_EFFORT` | `medium` | Its `--effort`. |
 | `NOTION_REFRESH_ANALYSIS_TIMEOUT` | `3600` | Seconds before the analysis is abandoned for a stub note. |
 | `NOTION_REFRESH_DEFER_NTFY` | `0` | `1` records the digest for a later `notify` run instead of sending it. |
 | `NOTION_REFRESH_PUSH` | `0` | `1` pushes the mirror repository after the commit. |

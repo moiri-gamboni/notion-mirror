@@ -32,7 +32,7 @@
 # NOTION_MIRROR_AUTOMATION_SUBTREES, read by refresh.py.
 #
 # Env knobs: NOTION_REFRESH_RPS (3.0) · NOTION_REFRESH_BUDGET (mode default)
-#            NOTION_REFRESH_MODEL (claude-sonnet-5) · NOTION_REFRESH_EFFORT (xhigh)
+#            NOTION_REFRESH_MODEL (opus) · NOTION_REFRESH_EFFORT (medium)
 #            NOTION_REFRESH_ANALYSIS_TIMEOUT (3600) · NOTION_REFRESH_PUSH (0)
 #            NOTION_REFRESH_DEFER_NTFY (0) · NOTION_REFRESH_RESUME (0)
 #            NOTION_MIRROR_TOOLS — the ENGINE-CODE root (where refresh.py,
@@ -52,8 +52,8 @@
 set -uo pipefail
 
 MODE="${1:-daily}"
-MODEL="${NOTION_REFRESH_MODEL:-claude-sonnet-5}"
-EFFORT="${NOTION_REFRESH_EFFORT:-xhigh}"
+MODEL="${NOTION_REFRESH_MODEL:-opus}"
+EFFORT="${NOTION_REFRESH_EFFORT:-medium}"
 export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
 say() { echo "[$(date -u -Is)] $*"; logger -t "notion-mirror" "$*" 2>/dev/null || true; }
