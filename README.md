@@ -107,6 +107,7 @@ The parser in `notion_core/md_blocks.py` inverts the renderer; a rendering chang
 | `NOTION_REFRESH_EFFORT` | `medium` | Its `--effort`. |
 | `NOTION_REFRESH_ANALYSIS_TIMEOUT` | `3600` | Seconds before the analysis is abandoned for a stub note. |
 | `NOTION_REFRESH_DEFER_NTFY` | `0` | `1` records the digest for a later `notify` run instead of sending it. |
+| `NOTION_REFRESH_NTFY_DIGEST` | `1` | `0` sends no digest from any mode, for a deployment that reads the changelog note directly. Failure alerts still go out. |
 | `NOTION_REFRESH_PUSH` | `0` | `1` pushes the mirror repository after the commit. |
 | `NOTION_REFRESH_RESUME` | `0` | `1` proceeds over a dirty tree (a crashed run's own writes). |
 | `NOTION_TOKEN` | from `$CLAUDE_CONFIG_DIR/.claude.json` | The integration token. |

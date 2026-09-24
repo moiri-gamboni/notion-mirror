@@ -34,7 +34,8 @@
 # Env knobs: NOTION_REFRESH_RPS (3.0) · NOTION_REFRESH_BUDGET (mode default)
 #            NOTION_REFRESH_MODEL (opus) · NOTION_REFRESH_EFFORT (medium)
 #            NOTION_REFRESH_ANALYSIS_TIMEOUT (3600) · NOTION_REFRESH_PUSH (0)
-#            NOTION_REFRESH_DEFER_NTFY (0) · NOTION_REFRESH_RESUME (0)
+#            NOTION_REFRESH_DEFER_NTFY (0) · NOTION_REFRESH_NTFY_DIGEST (1)
+#            NOTION_REFRESH_RESUME (0)
 #            NOTION_MIRROR_TOOLS — the ENGINE-CODE root (where refresh.py,
 #            rows_status.py, row_floor.py and changelog-prompt.md are read from).
 #            Defaults to this script's own directory; a sandbox points it at a
@@ -197,9 +198,15 @@ fi
 
 # --- ntfy digest builder (deterministic payload from the note's ntfy JSON ----
 # --- line; falls back to scraping TL;DR bullets for stub/legacy notes) --------
+# NOTION_REFRESH_NTFY_DIGEST=0 sends no digest at all, for a deployment that reads
+# the changelog note itself; failure alerts go through ntfy() and are unaffected.
 send_note_ntfy() {
     local note="$1" summary="$2" rel="$3"
     local payload title prio body
+    if [ "${NOTION_REFRESH_NTFY_DIGEST:-1}" = "0" ]; then
+        say "digest not sent (NOTION_REFRESH_NTFY_DIGEST=0); note at $rel"
+        return 0
+    fi
     payload="$(python3 - "$note" <<'EOF'
 import json, re, sys
 txt = open(sys.argv[1]).read()
