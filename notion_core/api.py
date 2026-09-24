@@ -8,8 +8,10 @@ silently short one. The mirror engine sets none; the standalone backfill tools a
 tasksync bound their own runs with it.
 """
 import collections
+import contextlib
 import http.client
 import json
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -77,6 +79,16 @@ def endpoint_class(method, path):
     return "other"
 
 
+def _rate_limit_details(body):
+    """`additional_data` of a 429 body (`rate_limit_reason`, `retry_after`), or {}."""
+    try:
+        d = json.loads(body)
+    except ValueError:
+        return {}
+    extra = d.get("additional_data") if isinstance(d, dict) else None
+    return extra if isinstance(extra, dict) else {}
+
+
 class Api:
     def __init__(self, token, rps, budget=None):
         self.token = token
@@ -86,7 +98,30 @@ class Api:
         self.r429 = 0
         # requests by endpoint_class, counted exactly where `n` is
         self.by_endpoint = collections.Counter()
+        # 429/529s by Notion's additional_data.rate_limit_reason ("?" when absent)
+        self.limit_reasons = collections.Counter()
         self._next_slot = 0.0  # earliest monotonic time the next request may fire
+        # Safe to share across threads: pacing and counting happen under this lock,
+        # the request itself outside it, so up to `workers` requests are in flight
+        # while the slots still come no faster than the interval.
+        self._lock = threading.Lock()
+
+    @contextlib.contextmanager
+    def rate(self, rps):
+        """Pace at `rps` inside the block (a concurrent phase), then back."""
+        before, self.interval = self.interval, 1.0 / rps
+        try:
+            yield
+        finally:
+            self.interval = before
+
+    def _count(self, method, path):
+        with self._lock:
+            self.n += 1
+            self.by_endpoint[endpoint_class(method, path)] += 1
+            n = self.n
+        if n % 200 == 0:
+            log(f"api requests: {n}")
 
     def check_budget(self):
         # With a message: callers print `{type}: {exc}` and a bare `Budget` reaches
@@ -102,11 +137,12 @@ class Api:
         already exceeds the interval (the common case: Notion round-trips ~0.4s
         vs a ~0.33s interval), this adds ZERO wait — the old fixed 0.4s post-sleep
         wasted ~0.4s/request, halving throughput below Notion's ~3 rps cap."""
-        now = time.monotonic()
-        if now < self._next_slot:
-            time.sleep(self._next_slot - now)
-            now = self._next_slot
-        self._next_slot = now + self.interval
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next_slot)
+            self._next_slot = slot + self.interval
+        if slot > now:
+            time.sleep(slot - now)
 
     def call(self, method, path, body=None, params=None, ver=VER):
         self.check_budget()
@@ -124,29 +160,33 @@ class Api:
                 self._pace()
                 with urllib.request.urlopen(req, timeout=90) as r:
                     out = json.loads(r.read().decode("utf-8"))
-                self.n += 1
-                self.by_endpoint[endpoint_class(method, path)] += 1
-                if self.n % 200 == 0:
-                    log(f"api requests: {self.n}")
+                self._count(method, path)
                 return out
             except urllib.error.HTTPError as e:
                 eb = e.read().decode("utf-8", "replace")
                 if e.code in (429, 529):
-                    self.r429 += 1
-                    ra = e.headers.get("Retry-After")
+                    # 529 is Notion's service_overload: retried exactly like a 429.
+                    # The wait is the Retry-After header, else the body's
+                    # additional_data.retry_after, else exponential; every
+                    # thread waits it out, not just this one.
+                    extra = _rate_limit_details(eb)
+                    ra = e.headers.get("Retry-After") or extra.get("retry_after")
                     try:
                         wait = float(ra) if ra else min(2 ** attempt, 30)
-                    except ValueError:  # RFC-7231 date or garbage: back off, don't crash
+                    except (TypeError, ValueError):  # a date or garbage: back off, don't crash
                         wait = min(2 ** attempt, 30)
-                    log(f"rate {e.code}, waiting {wait}s ({path})")
+                    with self._lock:
+                        self.r429 += 1
+                        self.limit_reasons[str(extra.get("rate_limit_reason") or e.code)] += 1
+                        self._next_slot = max(self._next_slot, time.monotonic() + wait + 0.5)
+                    log(f"rate {e.code} ({extra.get('rate_limit_reason') or 'no reason given'}), "
+                        f"waiting {wait}s ({path})")
                     time.sleep(wait + 0.5)
-                    self._next_slot = time.monotonic() + self.interval  # ease back in
                     continue
                 if 500 <= e.code < 600:
                     time.sleep(min(2 ** attempt, 30))
                     continue
-                self.n += 1
-                self.by_endpoint[endpoint_class(method, path)] += 1
+                self._count(method, path)
                 raise ApiError(e.code, eb)
             # A body that does not arrive whole belongs here and not with the
             # caller: a page cut mid-string surfaces as a JSON (or UTF-8) decode

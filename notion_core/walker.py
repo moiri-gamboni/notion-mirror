@@ -80,17 +80,16 @@ class Walker:
             pass
         return out
 
-    def harvest_comments(self, cap=None):
+    def harvest_comments(self, cap=None, pool=None):
         """Query comments for every walked block -> ([(anchor, comments)], capped).
         cap: skip the per-block scan entirely when the page has more blocks
-        (page-level comments are the caller's job either way)."""
+        (page-level comments are the caller's job either way). pool: an executor
+        to list the blocks concurrently (the Api paces them); order is kept."""
         if cap is not None and len(self.block_anchors) > cap:
             return [], True
-        found = []
-        for bid, anchor in self.block_anchors:
-            cs = self.comments_for(bid)
-            if cs:
-                found.append((anchor, cs))
+        bids = [bid for bid, _anchor in self.block_anchors]
+        listed = pool.map(self.comments_for, bids) if pool is not None else map(self.comments_for, bids)
+        found = [(anchor, cs) for (_bid, anchor), cs in zip(self.block_anchors, listed) if cs]
         return found, False
 
     def walk(self, block_id, lines, indent):
