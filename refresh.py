@@ -321,6 +321,17 @@ def has_comments(enrichment):
     return "\n## Comments" in t
 
 
+def stored_comments_body(enrichment):
+    """The stored comments region's bullet text. A delimited file with no comments
+    region has none: `extract_comments_body` would otherwise fall back to the
+    `## Comments` heading regex, which matches a heading inside the body and
+    reads body lines as comments."""
+    t = enrichment or ""
+    if COMMENTS_OPEN not in t and BODY_OPEN in t:
+        return ""
+    return extract_comments_body(t)
+
+
 def has_enrichment(txt):
     """Does this row file carry a body or comments region? (db_probe_policy's
     'this row is worth probing' rule.)"""
@@ -863,7 +874,7 @@ def upsert_row_md(api, users, page, db_id, db_title, cols, dirpath, probe, state
     fully_read = False
     if probe:
         stored = (existing_enrichment(os.path.join(dirpath, old_name)) or "") if old_name else ""
-        old_cb = extract_comments_body(stored)
+        old_cb = stored_comments_body(stored)
         # read before probing: the date a still-failing row was first missed
         # survives only on disk
         first_missed = probe_annotation(stored)
@@ -872,13 +883,14 @@ def upsert_row_md(api, users, page, db_id, db_title, cols, dirpath, probe, state
         # Once it has been, a body-triggered probe carries its comments over.
         mode = "scan" if probe == "scan" or not has_enrichment(stored) else "carry"
         scans = state.setdefault("comment_scans", {})
+        started = now_iso()  # a comment made mid-scan is newer than the scan
         try:
             enrichment = probe_row(api, users, page["id"], dirpath, report,
                                    old_comments_body=old_cb, discovered=discovered,
                                    comments=mode, last_scan=scans.get(rid, ""))
             report.setdefault("comments", {}).setdefault("row_probes", {"carry": 0, "scan": 0})[mode] += 1
             if mode == "scan":
-                scans[rid] = now_iso()
+                scans[rid] = started
             fully_read = True
         except ApiError as e:
             report["dbs"]["errors"].append({"db": db_title, "op": f"probe {rid[:8]}", "error": str(e)[:160]})
@@ -1318,7 +1330,16 @@ def merge_comment_bullets(old_body, new_bullets, today, prefix="- **on**"):
 
     Identity is the comment id (`still_live`), so an *edited* comment updates in
     place: the fresh bullet carries the same id, the stored one is recognised as
-    live and dropped in its favour, and no false resolved annotation appears."""
+    live and dropped in its favour, and no false resolved annotation appears.
+
+    A capture `union_captured` re-adds as resolved keeps the stored bullet when
+    that is already annotated: the date says when the comment was first found
+    gone, and re-stamping it with today's on every scan both loses that and
+    rewrites every such bullet each night."""
+    gone = {bullet_cid(b): b for b in split_bullets(old_body, prefix)
+            if bullet_cid(b) and RESOLVED_MARK.search(b)}
+    new_bullets = [gone.get(bullet_cid(n), n) if RESOLVED_MARK.search(n) else n
+                   for n in new_bullets]
     ids, texts = live_index(new_bullets)
     retained = []
     newly = 0
@@ -1516,8 +1537,14 @@ def webhook_deletions():
 def with_comments(enrichment, bullets):
     """A row's enrichment with its comments region replaced by `bullets` and
     everything before it — the body region, a probe annotation — kept verbatim.
-    Byte-identical to what `probe_row` writes for the same body and bullets."""
-    base = strip_comments_section(enrichment or "").rstrip("\n")
+    Byte-identical to what `probe_row` writes for the same body and bullets.
+
+    A delimited file with no comments region is kept whole: the heading fallback
+    in `strip_comments_section` would cut it at a `## Comments` heading that is
+    part of the body."""
+    t = enrichment or ""
+    whole = COMMENTS_OPEN not in t and BODY_OPEN in t
+    base = (t if whole else strip_comments_section(t)).rstrip("\n")
     if not bullets:
         return base + "\n" if base.strip() else ""
     tail = "\n".join(comments_section_lines(bullets))
@@ -1579,7 +1606,7 @@ def fold_captures(users, state, report, args):
             if MARKER not in txt:
                 continue
             head, enr = txt.split(MARKER, 1)
-            old = split_bullets(extract_comments_body(enr), prefix="- _")
+            old = split_bullets(stored_comments_body(enr), prefix="- _")
             new, st = fold_bullets(old, pc, state["comment_scans"].get(pid, ""), users,
                                    True, dels, today)
             if new != old:
@@ -2579,7 +2606,15 @@ def phase_content(api, users, state, report, args, mode, discovered):
             if pg.get("in_trash") or pg.get("archived"):
                 raise ApiError(404, "in_trash")
             consider(pg)
-        except ApiError:
+        except ApiError as e:
+            if e.code != 404:
+                # Not a verdict about the page (a 5xx that outlasted the
+                # retries, a dropped connection): deleting on it would empty the
+                # mirror during an outage. Keep it; the next run asks again.
+                report["pages"]["errors"].append({"id": i, "title": old.get("title", ""),
+                                                  "error": f"deletion check: {e}"[:160]})
+                complete = False
+                continue
             if pt in ("page_id", "block_id", "workspace"):
                 path = page_index.get(i)
                 report["pages"]["deleted"].append({"id": i, "title": old.get("title", "")})
@@ -2762,13 +2797,14 @@ def phase_comment_audit_pages(api, users, meta, state, report, args):
     due = sorted(human, key=lambda m: (scans.get(m["id"], ""), m["id"]))[:audit_share(len(human), days)]
     updates = {}
     for n, m in enumerate(due, 1):
+        started = now_iso()  # a comment made mid-scan is newer than the scan
         try:
             updates[m["id"]] = {"title": m.get("title") or "(untitled)",
                                 "bullets": scan_page_comments(api, users, m)}
         except ApiError as e:
             report["pages"]["errors"].append({"id": m["id"], "title": m.get("title", ""),
                                               "error": f"comment audit: {e}"[:160]})
-        scans[m["id"]] = now_iso()  # an erroring page still moves to the back
+        scans[m["id"]] = started  # an erroring page still moves to the back
         if n % 100 == 0:
             log(f"page comment audit {n}/{len(due)} (req={api.n})")
     if not args.dry_run:
