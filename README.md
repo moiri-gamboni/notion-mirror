@@ -100,8 +100,12 @@ The parser in `notion_core/md_blocks.py` inverts the renderer; a rendering chang
 | `NOTION_MIRROR_ROW_FLOOR_ALLOW_SHRINK` | unset | `1` accepts a breach (still logged). |
 | `NOTION_MIRROR_LOCK` | `~/.locks/notion-mirror-internal` | The engine's lock file. Tests and rehearsals only. |
 | `NOTION_REFRESH_RPS` | `3.0` | Requests per second. |
-| `NOTION_REFRESH_PAGE_AUDIT_DAYS` | `3` | Cycle of the per-block comment audit over the human content pages: each night reads the `1/N` longest-unscanned. |
-| `NOTION_REFRESH_ROW_AUDIT_DAYS` | `4` | The same for the comment-bearing DB rows. |
+| `NOTION_REFRESH_PAGE_AUDIT_DAYS` | `30` | Cycle of the backstop per-block comment audit over the human content pages: each night reads the `1/N` longest-unscanned. |
+| `NOTION_REFRESH_ROW_AUDIT_DAYS` | `14` | The same for the comment-bearing DB rows. |
+| `NOTION_REFRESH_LEGACY_PAGES` | `60` | Pages holding open comments with no id rescanned per night, ahead of the audit's share, until none are left. |
+| `NOTION_REFRESH_LEGACY_ROWS` | `100` | The same for rows. |
+| `NOTION_REFRESH_COMMENT_RPS` | `8` | Pace of the comment-listing phases (resolution check, audits), which run several requests at once. The workspace's rate limit is shared with every other integration. |
+| `NOTION_REFRESH_COMMENT_WORKERS` | `6` | Requests in flight in those phases. |
 | `NOTION_REFRESH_MODEL` | `opus` | Model for the changelog analysis (the CLI alias, so the latest Opus). |
 | `NOTION_REFRESH_EFFORT` | `medium` | Its `--effort`. |
 | `NOTION_REFRESH_ANALYSIS_TIMEOUT` | `3600` | Seconds before the analysis is abandoned for a stub note. |
@@ -187,7 +191,7 @@ NOTION_MIRROR=/path/to/mirror python3 -m unittest discover tests
     changelog/YYYY-MM-DD.md   one note per refresh
     coverage/census.json, coverage/exclusions.json   tracked
     state/                    gitignored run state: last-run-report.{json,md}, last-run.json,
-                              rows-refresh-status.json, users.json, comment-scan.json, page-walks.json,
+                              rows-refresh-status.json, users.json, comment-scan.json, page-walks.json, comment-parents.json,
                               comment-rows.json, props-probe-queue.json, webhook-secret,
                               webhook-events.jsonl, webhook-comments-capture.jsonl,
                               webhook-capture-offset.json, pending-ntfy.tsv, ...
@@ -296,7 +300,10 @@ Keep-sentinels (`<!-- notion:keep block=<id32> type=<t> -->`) immediately preced
 Comments do not bump a page's `last_edited_time` and the API has no global comments feed, so reading them costs one request per block. They reach the mirror by two roads, and only one of them reads blocks:
 
 - **The webhook fold** (every nightly, first, zero requests). The receiver captures a comment's whole thread within about a minute of any `comment.*` event; the fold merges those records into `_comments.md` and the row files by comment id. A capture newer than the page's last full scan (`comment-scan.json`) adds its comment open or updates an edited one in place; an older one may only add a comment the scan never had, as resolved by the scan's date; with no scan on record it adds but never rewrites. A `comment.deleted` event, whose entity is the comment, marks the bullet. Folding the same log twice changes nothing.
-- **The rolling audit** (every nightly, last). Notion fires no event when a thread is resolved, and a resolved comment simply stops being listed, so resolution is only ever noticed by reading every block again. Each night re-reads `1/NOTION_REFRESH_PAGE_AUDIT_DAYS` (default 3) of the human content pages and `1/NOTION_REFRESH_ROW_AUDIT_DAYS` (default 4) of the comment-bearing rows, longest-unscanned first — sized by count, so the whole corpus cycles on schedule however busy the night is. The report shows the oldest page scan left after it.
+- **The resolution check** (every nightly). Notion fires no event when a thread is resolved, and a resolved comment simply stops being listed, so resolution only shows as absence from a fresh listing of the thread's block — and only a thread the mirror holds open can be resolved. So every night lists the blocks of every open thread (a page-level thread's block is the page) and marks comments the listing no longer returns resolved; a listed comment the mirror lacks (a missed webhook) is added, and a reopened one loses its annotation. A thread's block comes from the capture log, else once from `GET /comments/{id}`, which answers for resolved comments too (404: deleted), and is kept in `comment-parents.json`. Open bullets with no comment id are out of its reach.
+- **The rolling audit** (every nightly, last), a backstop for a `comment.created` the receiver never saw on a block with no open thread: it re-reads every block of `1/NOTION_REFRESH_PAGE_AUDIT_DAYS` (default 30) of the human content pages and `1/NOTION_REFRESH_ROW_AUDIT_DAYS` (default 14) of the comment-bearing rows, longest-unscanned first. Pages and rows still holding open id-less comments go first (`NOTION_REFRESH_LEGACY_PAGES`/`_ROWS` a night): their one rescan gives those comments ids. The report shows the oldest page scan left after it.
+
+The comment-listing phases keep `NOTION_REFRESH_COMMENT_WORKERS` requests in flight at `NOTION_REFRESH_COMMENT_RPS`; every other phase is sequential. A 429 or 529 pauses every worker for the Retry-After (or the body's `retry_after`), and the report counts them by `rate_limit_reason`.
 
 Nothing else reads comments per block: a body edit re-walks the body and carries the stored comments over with that row's captures folded in, as a props probe carries the body. The exceptions are first reads — a row the mirror has never enriched, a content page never scanned (read while its blocks are in hand) — whose comments predate any capture. Automation subtrees are never comment-scanned.
 
