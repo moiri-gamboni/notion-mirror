@@ -29,6 +29,9 @@ def pid(n):
 class PageAudit(MirrorSandbox):
     def setUp(self):
         super().setUp()
+        p = mock.patch.dict(os.environ, {"NOTION_REFRESH_PAGE_AUDIT_DAYS": "3"})
+        p.start()
+        self.addCleanup(p.stop)
         self.pages = [page_obj(pid(n), f"P{n}") for n in range(1, 8)]
         for p in self.pages:
             self.write_page("", refresh.undash(p["id"]), p["properties"]["title"]["title"][0]["plain_text"])
@@ -69,6 +72,21 @@ class PageAudit(MirrorSandbox):
             self.run_audit()
         self.assertEqual(self.api.walked(), [pid(1)])
 
+    def test_the_default_cycle_is_a_monthly_backstop(self):
+        with mock.patch.dict(os.environ, {"NOTION_REFRESH_PAGE_AUDIT_DAYS": ""}):
+            self.run_audit()
+        self.assertEqual(self.report["comments"]["audit"]["page_cycle_days"], 30)
+        self.assertEqual(self.api.walked(), [pid(1)])  # ceil(7 / 30) = 1
+
+    def test_pages_holding_id_less_comments_go_first(self):
+        legacy = "- **on** \"(page-level)\" — Someone (2024-01-01): old <!-- notion:cid legacy -->"
+        refresh.update_comments_md({pid(7): {"title": "P7", "bullets": [legacy]}},
+                                   refresh.new_report("x"), merge=False)
+        with mock.patch.dict(os.environ, {"NOTION_REFRESH_PAGE_AUDIT_DAYS": "7"}):
+            self.run_audit()
+        self.assertEqual(self.api.walked(), [pid(7), pid(1)], "the legacy page, then the share")
+        self.assertEqual(self.report["comments"]["audit"]["legacy_pages_scanned"], 1)
+
     def test_a_nonsense_cycle_length_refuses(self):
         with mock.patch.dict(os.environ, {"NOTION_REFRESH_PAGE_AUDIT_DAYS": "0"}):
             with self.assertRaises(ValueError):
@@ -78,6 +96,9 @@ class PageAudit(MirrorSandbox):
 class RowAudit(MirrorSandbox):
     def setUp(self):
         super().setUp()
+        p = mock.patch.dict(os.environ, {"NOTION_REFRESH_ROW_AUDIT_DAYS": "4"})
+        p.start()
+        self.addCleanup(p.stop)
         self.dbdir = os.path.join(self.dbs, f"Tasks {DB}")
         os.makedirs(self.dbdir)
         refresh.jsave(os.path.join(self.dbdir, "_schema.json"),

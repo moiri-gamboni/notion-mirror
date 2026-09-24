@@ -7,6 +7,7 @@ only on what it wrote. Anything it was not given raises: a green run is the
 proof that nothing reached Notion.
 """
 import collections
+import contextlib
 import os
 import re
 import shutil
@@ -63,8 +64,12 @@ class FakeUsers:
 class FakeNotion:
     CHILDREN = re.compile(r"^/blocks/([0-9a-f-]{32,36})/children$")
 
-    def __init__(self, search=(), pages=None, children=None, comments=None, dbs=None):
+    def __init__(self, search=(), pages=None, children=None, comments=None, dbs=None,
+                 comment_parents=None, gone_blocks=()):
         self.search = list(search)
+        # comment id32 -> (parent type, parent id32), what GET /comments/{id} answers
+        self.comment_parents = {refresh.undash(k): v for k, v in (comment_parents or {}).items()}
+        self.gone_blocks = {refresh.undash(b) for b in gone_blocks}
         # db id32 -> (GET /databases/{id} response, [row page objects])
         self.dbs = {refresh.undash(k): v for k, v in (dbs or {}).items()}
         self.pages = {refresh.undash(k): v for k, v in (pages or {}).items()}
@@ -89,6 +94,13 @@ class FakeNotion:
             if pid in self.pages:
                 return self.pages[pid]
             raise refresh.ApiError(404, "not found")
+        if path.startswith("/comments/"):
+            cid = refresh.undash(path.split("/comments/", 1)[1])
+            if cid not in self.comment_parents:
+                raise refresh.ApiError(404, "object_not_found")
+            kind, pid = self.comment_parents[cid]
+            return {"object": "comment", "id": refresh.dashed(cid),
+                    "parent": {"type": kind, kind: refresh.dashed(pid)}}
         if path.startswith("/databases/"):
             did = refresh.undash(path.split("/databases/", 1)[1])
             if did in self.dbs:
@@ -113,6 +125,8 @@ class FakeNotion:
                 yield from self.search
             return
         if path == "/comments":
+            if refresh.undash(params["block_id"]) in self.gone_blocks:
+                raise refresh.ApiError(404, "object_not_found")
             yield from self.comments.get(refresh.undash(params["block_id"]), [])
             return
         m = self.CHILDREN.match(path)
@@ -120,6 +134,9 @@ class FakeNotion:
             yield from self.children.get(refresh.undash(m.group(1)), [])
             return
         raise AssertionError(f"unexpected {method} {path}")
+
+    def rate(self, rps):
+        return contextlib.nullcontext()
 
     def comment_calls(self):
         return [c.split("?", 1)[1] for c in self.calls if c.startswith("/comments?")]
@@ -171,6 +188,7 @@ class MirrorSandbox(unittest.TestCase):
     def state(self, **extra):
         st = {"rows": {}, "db404": {}, "not_a_db": {}, "unshared": {}, "probe_policy": {},
               "content_since": "", "comment_scans": {}, "retry_pages": {}, "page_walks": {},
+              "comment_parents": {},
               "comment_rows": {}}
         st.update(extra)
         return st

@@ -35,6 +35,8 @@ module for the coverage assert.
 """
 import argparse
 import collections
+import concurrent.futures
+import contextlib
 import csv
 import datetime as dt
 import hashlib
@@ -464,7 +466,7 @@ def annotate_probe_failure(enrichment, day):
 
 
 def probe_row(api, users, page_id, dest_dir, report, old_comments_body="",
-              max_blocks=800, discovered=None, comments="scan", last_scan=""):
+              max_blocks=800, discovered=None, comments="scan", last_scan="", pool=None):
     """Fetch body + comments for a DB row -> enrichment string ('' if none).
 
     `comments="scan"` reads them from the API: page-level, then one request per
@@ -502,7 +504,7 @@ def probe_row(api, users, page_id, dest_dir, report, old_comments_body="",
                                  users, True, {}, today)
         return _finish_row_probe(w, parts, flat, page_id, dest_dir, report, max_blocks)
     page_comments = w.comments_for(page_id)
-    block_comments, _capped = w.harvest_comments()
+    block_comments, _capped = w.harvest_comments(pool=pool)
     flat = []
     for _anchor, cs in ([("(page)", page_comments)] if page_comments else []) + block_comments:
         for c in cs:
@@ -858,7 +860,7 @@ def refresh_db(api, users, db_id, dirname, state, report, args, discovered):
 
 
 def upsert_row_md(api, users, page, db_id, db_title, cols, dirpath, probe, state, report, args,
-                  md_idx=None, discovered=None):
+                  md_idx=None, discovered=None, pool=None):
     """Re-render one row file. `probe`: False carries the enrichment over
     verbatim; True walks the body and carries the comments (scanning them only
     on a row never enriched before); "scan" also reads the comments per block."""
@@ -887,7 +889,7 @@ def upsert_row_md(api, users, page, db_id, db_title, cols, dirpath, probe, state
         try:
             enrichment = probe_row(api, users, page["id"], dirpath, report,
                                    old_comments_body=old_cb, discovered=discovered,
-                                   comments=mode, last_scan=scans.get(rid, ""))
+                                   comments=mode, last_scan=scans.get(rid, ""), pool=pool)
             report.setdefault("comments", {}).setdefault("row_probes", {"carry": 0, "scan": 0})[mode] += 1
             if mode == "scan":
                 scans[rid] = started
@@ -2147,7 +2149,9 @@ def endpoint_line(counts):
 
 def report_md(r):
     L = [f"# Notion mirror refresh — {r['ts']} ({r['mode']})", "",
-         f"API requests: {r['requests']} (429s: {r['rate429']})",
+         f"API requests: {r['requests']} (429s: {r['rate429']}"
+         + (", by reason: " + ", ".join(f"{k} {v}" for k, v in r["rate_limit_reasons"].items())
+            if r.get("rate_limit_reasons") else "") + ")",
          f"Duration: {r['duration_s']}s"]
     if r.get("phases"):
         L += ["", "By phase: " + " · ".join(f"{k} {v}" for k, v in r["phases"].items() if v)]
@@ -2204,6 +2208,12 @@ def report_md(r):
     if c.get("contamination_breaches"):
         L.append(f"- **FAILED: {c['contamination_breaches']} comment text(s) attributed to more than "
                  f"{MAX_COMMENT_PAGES} pages** — see Notes")
+    rs = c.get("resolution")
+    if rs:
+        L.append(f"- resolution check: {rs['threads']} open threads on {rs['blocks']} blocks — "
+                 f"{rs['resolved']} resolved, {rs['added']} added (missed by the webhook), "
+                 f"{rs['reopened']} reopened, {rs['deleted']} deleted; "
+                 f"{rs['looked_up']} thread blocks looked up, {rs['errors']} unreadable")
     fo = c.get("folded")
     if fo:
         L.append(f"- webhook fold: +{fo['added']} added, {fo['updated']} edited, "
@@ -2752,14 +2762,14 @@ def _is_automation(pid, page_index):
     return any(rel.startswith(s + os.sep) for s in AUTOMATION_SUBTREES)
 
 
-def scan_page_comments(api, users, m):
+def scan_page_comments(api, users, m, pool=None):
     """Per-block comment rescan of one page -> bullets (walk + harvest +
-    page-level + webhook-captured union)."""
+    page-level + webhook-captured union). `pool` lists the blocks concurrently."""
     w = Walker(api, users, max_blocks=6000)
     sink = []
     w.walk(dashed(m["id"]), sink, 0)
     pl = w.comments_for(dashed(m["id"]))
-    bc, _capped = w.harvest_comments()
+    bc, _capped = w.harvest_comments(pool=pool)
     return union_captured(comment_bullets(pl, bc), m["id"], users)
 
 
@@ -2778,44 +2788,68 @@ def audit_share(total, days):
     return min(total, math.ceil(total / days)) if total else 0
 
 
+def _has_open_legacy(bullets):
+    """An open bullet with no comment id: the resolution check cannot reach it."""
+    return any(not bullet_cid(b) and not RESOLVED_MARK.search(b) for b in bullets)
+
+
+def _audit_order(ids, last, legacy, legacy_n, share):
+    """Tonight's audit: up to `legacy_n` of the ids holding open id-less comments
+    (their one rescan gives those comments ids, after which the resolution check
+    covers them), then the regular share, longest-unscanned first."""
+    order = sorted(ids, key=lambda i: (last(i), i))
+    first = [i for i in order if i in legacy][:legacy_n]
+    taken = set(first)
+    return first, first + [i for i in order if i not in taken][:share]
+
+
 def phase_comment_audit_pages(api, users, meta, state, report, args):
     """The rolling per-block comment audit of the human content pages.
 
-    The one place a content page's comments are still read block by block, and
-    it exists for what no event reports: Notion fires nothing when a thread is
-    resolved, and a resolved comment simply stops being listed, so noticing it
-    takes a fresh read of every block. Sized by count, not requests: every human
-    page is rescanned once per NOTION_REFRESH_PAGE_AUDIT_DAYS (default 3), the
-    longest-unscanned first, so a page never scanned sorts to the front.
-    Automation subtrees are out of scope and never scanned."""
+    A backstop now: the webhook fold brings new comments in and the resolution
+    check notices resolved ones every night, so a full block-by-block rescan is
+    only for what both miss — a comment.created the receiver never saw on a
+    page with no open thread. Sized by count: every human page is rescanned
+    once per NOTION_REFRESH_PAGE_AUDIT_DAYS (default 30), longest-unscanned
+    first, so a page never scanned sorts to the front. Pages still holding open
+    comments with no id go first, NOTION_REFRESH_LEGACY_PAGES (default 60) a
+    night, until none are left. Automation subtrees are never scanned."""
     page_index = index_workspace_pages()
     scans = state["comment_scans"]
-    human = [m for m in meta.values()
+    human = {m["id"]: m for m in meta.values()
              if m.get("parent_type") in ("page_id", "block_id", "workspace")
              and not m.get("in_trash") and not m.get("archived")
-             and not _is_automation(m["id"], page_index)]
-    days = _audit_days("NOTION_REFRESH_PAGE_AUDIT_DAYS", 3)
-    due = sorted(human, key=lambda m: (scans.get(m["id"], ""), m["id"]))[:audit_share(len(human), days)]
+             and not _is_automation(m["id"], page_index)}
+    days = _audit_days("NOTION_REFRESH_PAGE_AUDIT_DAYS", 30)
+    legacy = {s["id"] for s in load_comments_md()[1]
+              if s["id"] in human and _has_open_legacy(split_bullets(s["body"]))}
+    first, due = _audit_order(human, lambda i: scans.get(i, ""), legacy,
+                              int(os.environ.get("NOTION_REFRESH_LEGACY_PAGES", "60")),
+                              audit_share(len(human), days))
     updates = {}
-    for n, m in enumerate(due, 1):
-        started = now_iso()  # a comment made mid-scan is newer than the scan
-        try:
-            updates[m["id"]] = {"title": m.get("title") or "(untitled)",
-                                "bullets": scan_page_comments(api, users, m)}
-        except ApiError as e:
-            report["pages"]["errors"].append({"id": m["id"], "title": m.get("title", ""),
-                                              "error": f"comment audit: {e}"[:160]})
-        scans[m["id"]] = started  # an erroring page still moves to the back
-        if n % 100 == 0:
-            log(f"page comment audit {n}/{len(due)} (req={api.n})")
+    with comment_listing(api) as pool:
+        for n, pid in enumerate(due, 1):
+            m = human[pid]
+            started = now_iso()  # a comment made mid-scan is newer than the scan
+            try:
+                updates[pid] = {"title": m.get("title") or "(untitled)",
+                                "bullets": scan_page_comments(api, users, m, pool=pool)}
+            except ApiError as e:
+                report["pages"]["errors"].append({"id": pid, "title": m.get("title", ""),
+                                                  "error": f"comment audit: {e}"[:160]})
+            scans[pid] = started  # an erroring page still moves to the back
+            if n % 100 == 0:
+                log(f"page comment audit {n}/{len(due)} (req={api.n})")
     if not args.dry_run:
         update_comments_md(updates, report)
     report["comments"]["pages_rescanned"] += len(updates)
-    oldest = min((scans.get(m["id"], "") for m in human), default="")
+    oldest = min((scans.get(i, "") for i in human), default="")
     report["comments"].setdefault("audit", {}).update({
         "pages_scanned": len(due), "pages_total": len(human), "page_cycle_days": days,
+        "legacy_pages_scanned": len(first), "legacy_pages_left": len(legacy) - len(first),
         "oldest_page_scan": oldest})
-    log(f"page comment audit: {len(due)}/{len(human)} human pages ({days:g}-day cycle)")
+    log(f"page comment audit: {len(due)}/{len(human)} human pages ({days:g}-day cycle; "
+        f"{len(first)} of {len(legacy)} with id-less comments)")
 
 
 def seed_comment_rows(state):
@@ -2837,45 +2871,305 @@ def seed_comment_rows(state):
 
 
 def phase_comment_audit_rows(api, users, state, report, args, discovered=None):
-    """The rolling per-block comment audit of the comment-bearing DB rows: every
-    row in the pool re-probed with a full comment read once per
-    NOTION_REFRESH_ROW_AUDIT_DAYS (default 4), longest-unaudited first. Rows
-    carry comments too (tasks, meetings, notes) and resolution on them is as
-    silent as on pages; this is the only place it is noticed."""
+    """The rolling per-block comment audit of the comment-bearing DB rows, the
+    same backstop as the page audit: every row in the pool re-probed with a full
+    comment read once per NOTION_REFRESH_ROW_AUDIT_DAYS (default 14),
+    longest-unaudited first, rows holding open id-less comments first
+    (NOTION_REFRESH_LEGACY_ROWS, default 100, a night)."""
     crows = state["comment_rows"]
     if not crows:
         seed_comment_rows(state)
     row_to_db = {rid: db for db, rows in state["rows"].items() for rid in rows}
     for rid in [r for r in crows if r not in row_to_db]:
         crows.pop(rid)  # row deleted since it joined
-    days = _audit_days("NOTION_REFRESH_ROW_AUDIT_DAYS", 4)
-    due = sorted(crows, key=lambda r: (crows[r], r))[:audit_share(len(crows), days)]
+    days = _audit_days("NOTION_REFRESH_ROW_AUDIT_DAYS", 14)
+    index = row_md_global_index()
+    legacy = set()
+    for rid in crows:
+        if rid in index:
+            d, f = index[rid]
+            try:
+                txt = open(os.path.join(DBS, d, f)).read()
+            except OSError:
+                continue
+            if MARKER in txt and _has_open_legacy(split_bullets(
+                    stored_comments_body(txt.split(MARKER, 1)[1]), prefix="- _")):
+                legacy.add(rid)
+    first, due = _audit_order(crows, lambda r: crows[r], legacy,
+                              int(os.environ.get("NOTION_REFRESH_LEGACY_ROWS", "100")),
+                              audit_share(len(crows), days))
     dirs = db_dirs()
     mds = {}
     done = 0
-    for rid in due:
-        dirname = dirs.get(row_to_db[rid])
-        if not dirname:
-            continue
-        dirpath, title, idx = row_render_target(dirname, mds)
-        try:
-            page = api.get(f"/pages/{dashed(rid)}")
-            expand_truncated_props(api, page, title, report)
-            csvp = db_csv_path(dirpath)
-            cols = csv_cols(csvp)
-            if cols:
-                upsert_row_md(api, users, page, row_to_db[rid], title, cols, dirpath, "scan",
-                              state, report, args, md_idx=idx, discovered=discovered)
-                if not args.dry_run:
-                    update_csv_row(csvp, cols, rid, page, users)
-            done += 1
-        except ApiError as e:
-            report["dbs"]["errors"].append({"db": title, "op": f"comment audit {rid[:8]}",
-                                            "error": str(e)[:160]})
-        crows[rid] = now_iso()
+    with comment_listing(api) as pool:
+        for rid in due:
+            dirname = dirs.get(row_to_db[rid])
+            if not dirname:
+                continue
+            dirpath, title, idx = row_render_target(dirname, mds)
+            try:
+                page = api.get(f"/pages/{dashed(rid)}")
+                expand_truncated_props(api, page, title, report)
+                csvp = db_csv_path(dirpath)
+                cols = csv_cols(csvp)
+                if cols:
+                    upsert_row_md(api, users, page, row_to_db[rid], title, cols, dirpath, "scan",
+                                  state, report, args, md_idx=idx, discovered=discovered,
+                                  pool=pool)
+                    if not args.dry_run:
+                        update_csv_row(csvp, cols, rid, page, users)
+                done += 1
+            except ApiError as e:
+                report["dbs"]["errors"].append({"db": title, "op": f"comment audit {rid[:8]}",
+                                                "error": str(e)[:160]})
+            crows[rid] = now_iso()
     report["comments"].setdefault("audit", {}).update({
-        "rows_scanned": done, "rows_pool": len(crows), "row_cycle_days": days})
-    log(f"row comment audit: {done}/{len(due)} rows probed (pool {len(crows)}, {days:g}-day cycle)")
+        "rows_scanned": done, "rows_pool": len(crows), "row_cycle_days": days,
+        "legacy_rows_scanned": len(first), "legacy_rows_left": len(legacy) - len(first)})
+    log(f"row comment audit: {done}/{len(due)} rows probed (pool {len(crows)}, {days:g}-day "
+        f"cycle; {len(first)} of {len(legacy)} with id-less comments)")
+
+
+@contextlib.contextmanager
+def comment_listing(api):
+    """An executor for the comment-listing phases, with the Api paced at
+    NOTION_REFRESH_COMMENT_RPS (8) across NOTION_REFRESH_COMMENT_WORKERS (6) in
+    flight. The engine is otherwise sequential and latency-bound (~2.3 req/s);
+    these phases are thousands of independent GETs. Notion's per-connection
+    limit is well above that (600 or 180 req/min by plan) but the workspace's
+    is shared with the webhook receiver, tasksync and every other integration,
+    so the rate stays below it and any 429/529 pauses every worker."""
+    rps = float(os.environ.get("NOTION_REFRESH_COMMENT_RPS", "8"))
+    workers = int(os.environ.get("NOTION_REFRESH_COMMENT_WORKERS", "6"))
+    with api.rate(rps), concurrent.futures.ThreadPoolExecutor(max(1, workers)) as pool:
+        yield pool
+
+
+def _open_bullet_homes(rows_index=None):
+    """{(kind, home id): [bullets]} for every page section and row file that
+    holds at least one open (unannotated) bullet; kind is "page" or "row"."""
+    out = {}
+    for s in load_comments_md()[1]:
+        bs = split_bullets(s["body"])
+        if any(not RESOLVED_MARK.search(b) for b in bs):
+            out[("page", s["id"])] = bs
+    for rid, (d, f) in (rows_index if rows_index is not None else row_md_global_index()).items():
+        try:
+            txt = open(os.path.join(DBS, d, f)).read()
+        except OSError:
+            continue
+        if MARKER not in txt or not has_comments(txt):
+            continue
+        bs = split_bullets(stored_comments_body(txt.split(MARKER, 1)[1]), prefix="- _")
+        if any(not RESOLVED_MARK.search(b) for b in bs):
+            out[("row", rid)] = bs
+    return out
+
+
+def _thread_of(bullet):
+    m = CID_MARK.search(bullet)
+    if not m or m.group(1) == CID_LEGACY:
+        return None, None
+    return m.group(1), (m.group(2) or m.group(1))
+
+
+def capture_parents():
+    """discussion id32 -> the block or page id32 its thread sits on, from the
+    receiver's capture log (each record is one thread's parent and comments)."""
+    out = {}
+    path = os.path.join(STATE, paths.CAPTURE)
+    if not os.path.exists(path):
+        return out
+    for ln in open(path):
+        try:
+            e = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        ent = undash(e.get("entity_id") or "")
+        if len(ent) != 32:
+            continue
+        for c in e.get("comments", []):
+            did = undash(c.get("discussion_id") or c.get("id") or "")
+            if did:
+                out[did] = ent
+    return out
+
+
+def _listed_comment(c, users):
+    return Comment(rich_md(c.get("rich_text")), users.name(c.get("created_by")),
+                   c.get("created_time", ""), undash(c.get("id") or ""),
+                   undash(c.get("discussion_id") or ""))
+
+
+def _render(c, kind, anchor):
+    if kind == "row":
+        t = c.text.replace("\r", "").replace("\n", "\n  ")
+        return stamp_cid(f"- _{c.who} ({c.when[:10]}):_ {t}", c.cid, c.did)
+    return stamp_cid(f'- **on** "{anchor}" — {c.who} ({c.when[:10]}): {c.text}', c.cid, c.did)
+
+
+_ANCHOR = re.compile(r'^- \*\*on\*\* "(.*?)" — ')
+
+
+def phase_resolution_check(api, users, state, report, args):
+    """Every open comment thread in the mirror, re-listed where it lives, every night.
+
+    Resolving a thread fires no webhook and a resolved comment simply stops
+    being listed, so the only way to see one is to list the comments of the
+    block it sat on. It can only happen to a thread the mirror holds open, so
+    this lists exactly those blocks (a page-level thread's is the page) and
+    marks any open comment the listing no longer returns resolved. A comment
+    on a listed block that the mirror lacks (a missed comment.created) is added,
+    and a resolved one listed again (a reopened thread) loses its annotation.
+
+    A thread's block comes from the capture log, else from `GET /comments/{id}`
+    (which answers for resolved comments too, so it is asked once per thread
+    and remembered in comment-parents.json). A comment that answers 404 is
+    deleted. id-less legacy bullets are out of reach here; the audit upgrades
+    them."""
+    today = dt.datetime.now(UTC).strftime("%Y-%m-%d")
+    parents = state["comment_parents"]
+    homes = _open_bullet_homes()
+    threads = {}  # did -> [(home key, cid)]
+    for key, bs in homes.items():
+        for b in bs:
+            if RESOLVED_MARK.search(b):
+                continue
+            cid, did = _thread_of(b)
+            if cid:
+                threads.setdefault(did, []).append((key, cid))
+    stats = {"threads": len(threads), "homes": len(homes), "from_state": 0, "from_captures": 0,
+             "looked_up": 0, "deleted": 0, "blocks": 0, "blocks_gone": 0, "errors": 0,
+             "resolved": 0, "added": 0, "reopened": 0}
+    caps = capture_parents()
+    gone = set()  # comment ids that answered 404
+    todo = []
+    for did, members in threads.items():
+        if did in parents:
+            stats["from_state"] += 1
+        elif did in caps:
+            parents[did] = caps[did]
+            stats["from_captures"] += 1
+        else:
+            todo.append((did, members[0][1]))
+
+    def lookup(item):
+        did, cid = item
+        try:
+            c = api.get(f"/comments/{dashed(cid)}")
+        except ApiError as e:
+            return did, cid, ("gone" if e.code == 404 else None)
+        par = c.get("parent") or {}
+        return did, cid, undash(par.get(par.get("type", "")) or "") or None
+
+    with comment_listing(api) as pool:
+        for did, cid, where in pool.map(lookup, todo):
+            if where == "gone":
+                gone.add(cid)
+                stats["deleted"] += 1
+            elif where:
+                parents[did] = where
+                stats["looked_up"] += 1
+            else:
+                stats["errors"] += 1
+        blocks = sorted({parents[did] for did in threads if did in parents})
+        stats["blocks"] = len(blocks)
+
+        def listing(block):
+            try:
+                return block, [_listed_comment(c, users) for c in api.paginate(
+                    "GET", "/comments", params={"block_id": dashed(block)})]
+            except ApiError as e:
+                return block, ("gone" if e.code == 404 else None)
+
+        listed = dict(pool.map(listing, blocks))
+
+    stats["blocks_gone"] = sum(1 for v in listed.values() if v == "gone")
+    stats["errors"] += sum(1 for v in listed.values() if v is None)
+    by_home = collections.defaultdict(set)  # home key -> blocks its threads sit on
+    for did, members in threads.items():
+        for key, _cid in members:
+            if did in parents:
+                by_home[key].add(parents[did])
+    page_updates = {}
+    meta = None
+    rows_index = None
+    for key, bs in homes.items():
+        kind, home = key
+        blocks_here = [b for b in by_home.get(key, ()) if listed.get(b) is not None]
+        live = {}
+        block_of = {}
+        for b in blocks_here:
+            if listed[b] != "gone":
+                for c in listed[b]:
+                    live[c.cid] = c
+                    block_of[c.cid] = b
+        checked = set(blocks_here)
+        new = []
+        seen = set()
+        for b in bs:
+            cid, did = _thread_of(b)
+            if cid:
+                seen.add(cid)
+            if not cid:
+                new.append(b)
+            elif cid in gone and not RESOLVED_MARK.search(b):
+                new.append(annotate_resolved(b, today))
+                stats["resolved"] += 1
+            elif parents.get(did) in checked:
+                if cid in live and RESOLVED_MARK.search(b):
+                    new.append(RESOLVED_MARK.sub("", b))
+                    stats["reopened"] += 1
+                elif cid not in live and not RESOLVED_MARK.search(b):
+                    new.append(annotate_resolved(b, today))
+                    stats["resolved"] += 1
+                else:
+                    new.append(b)
+            else:
+                new.append(b)
+        anchor_of = {}
+        for b in bs:
+            cid, did = _thread_of(b)
+            m = _ANCHOR.match(b)
+            if cid and m and did in parents:
+                anchor_of.setdefault(parents[did], m.group(1))
+        legacy = {bullet_text_key(b) for b in bs if not bullet_cid(b)}
+        for c in sorted(live.values(), key=lambda c: c.when):
+            if c.cid in seen:
+                continue
+            block = block_of[c.cid]
+            parents.setdefault(c.did or c.cid, block)  # known now: no lookup next night
+            b = _render(c, kind, anchor_of.get(block, "(page-level)"))
+            if bullet_text_key(b) in legacy:
+                continue  # already here as an id-less bullet
+            new.append(b)
+            stats["added"] += 1
+        if new == bs:
+            continue
+        if kind == "page":
+            if meta is None:
+                meta = load_meta_jsonl()[0]
+            page_updates[home] = {"title": (meta.get(home) or {}).get("title") or
+                                  next((s["title"] for s in load_comments_md()[1] if s["id"] == home),
+                                       "(untitled)"),
+                                  "bullets": new}
+        elif not args.dry_run:
+            if rows_index is None:
+                rows_index = row_md_global_index()
+            d, f = rows_index[home]
+            path = os.path.join(DBS, d, f)
+            txt = open(path).read()
+            head, enr = txt.split(MARKER, 1)
+            with open(path, "w") as fh:
+                fh.write(head + MARKER + (with_comments(enr, new) or "\n"))
+    if page_updates and not args.dry_run:
+        update_comments_md(page_updates, report, merge=False)
+    report["comments"]["added"] += stats["added"]
+    report["comments"]["retained"] += stats["resolved"]
+    report["comments"]["resolution"] = stats
+    log(f"resolution check: {stats['threads']} open threads on {stats['blocks']} blocks — "
+        f"{stats['resolved']} resolved, {stats['added']} added, {stats['reopened']} reopened, "
+        f"{stats['deleted']} deleted, {stats['errors']} unreadable")
 
 
 def phase_full_comment_sweep(api, users, meta, state, report, args):
@@ -3325,6 +3619,7 @@ def main():
         "comment_scans": jload(os.path.join(STATE, "comment-scan.json"), {}),
         "retry_pages": jload(os.path.join(STATE, "retry-pages.json"), {}),
         "page_walks": jload(os.path.join(STATE, "page-walks.json"), {}),
+        "comment_parents": jload(os.path.join(STATE, "comment-parents.json"), {}),
         "comment_rows": jload(os.path.join(STATE, "comment-rows.json"), {}),
     }
     rows_state_path = os.path.join(STATE, "rows-last-edited.json")
@@ -3380,6 +3675,7 @@ def main():
                 if args.mode == "full-comments":
                     run_phase("full-comments", phase_full_comment_sweep, api, users, meta, state, report, args)
                 else:
+                    run_phase("resolve", phase_resolution_check, api, users, state, report, args)
                     run_phase("audit-pages", phase_comment_audit_pages, api, users, meta, state,
                               report, args)
             if args.mode != "full-comments" and not args.skip_dbs:
@@ -3400,6 +3696,7 @@ def main():
         report["requests"] = api.n
         report["requests_by_endpoint"] = dict(api.by_endpoint.most_common())
         report["rate429"] = api.r429
+        report["rate_limit_reasons"] = dict(getattr(api, "limit_reasons", {}))
         report["duration_s"] = int(time.time() - t0)
         if not args.dry_run:
             users.save()
@@ -3419,6 +3716,7 @@ def main():
             jsave(os.path.join(STATE, "comment-scan.json"), state["comment_scans"])
             jsave(os.path.join(STATE, "retry-pages.json"), state["retry_pages"])
             jsave(os.path.join(STATE, "page-walks.json"), state["page_walks"])
+            jsave(os.path.join(STATE, "comment-parents.json"), state["comment_parents"])
             jsave(os.path.join(STATE, "comment-rows.json"), state["comment_rows"])
             jsave(os.path.join(STATE, "db-flags.json"),
                   {"db404": state["db404"], "not_a_db": state["not_a_db"],
