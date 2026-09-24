@@ -87,6 +87,14 @@ STATE = paths.STATE
 
 ID32 = re.compile(r"([0-9a-f]{32})(?:\.md|\.csv)?$")
 
+# Set by main() for `--dry-run`. The phases guard their own writes with
+# args.dry_run; this reaches the helpers several calls below any `args` — the
+# attachment download, a page's folder, the schema files, the consumed webhook
+# DB events — so a dry run leaves the mirror exactly as it found it (its own
+# `last-run-report.dry-run.*` aside) while still issuing every read a real run
+# would, which is what makes its request counts an estimate of one.
+DRY_RUN = False
+
 
 def now_iso():
     return dt.datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -150,7 +158,7 @@ class Users:
 
 def download_attachments(walker, lines, dest_dir, prefix_for, report):
     """Resolve ATTACH: placeholders -> relative filenames, downloading new files."""
-    if not walker.attachments:
+    if not walker.attachments or DRY_RUN:
         return [ln for ln in lines]
     os.makedirs(dest_dir, exist_ok=True)
     existing = os.listdir(dest_dir)
@@ -654,13 +662,14 @@ def refresh_schema_files(api, dirpath, db_id, title, nrows, report, force=False,
     # block would be computed and dropped on every database whose schema is steady.
     if force or oldn != d or old.get("title") != live_title \
             or old.get("data_sources") != new["data_sources"]:
-        jsave(spath, new)
         props = d.get("properties") or {}
-        with open(os.path.join(dirpath, "_schema.md"), "w") as f:
-            f.write(schema_md(live_title, db_id, nrows, props))
         if oldn.get("properties") != d.get("properties"):
             report["dbs"]["schema_changed"].append(live_title)
-        update_all_schemas(live_title, db_id, nrows, props)
+        if not DRY_RUN:
+            jsave(spath, new)
+            with open(os.path.join(dirpath, "_schema.md"), "w") as f:
+                f.write(schema_md(live_title, db_id, nrows, props))
+            update_all_schemas(live_title, db_id, nrows, props)
     return d.get("properties") or {}, live_title
 
 
@@ -704,8 +713,9 @@ def refresh_db(api, users, db_id, dirname, state, report, args, discovered):
             if strikes >= 2:
                 report["dbs"]["deleted"].append({"title": title, "id": db_id,
                                                  "note": "404 twice — deleted or un-shared; local dir removed"})
-                shutil.rmtree(dirpath, ignore_errors=True)
-                remove_all_schemas_section(db_id)
+                if not args.dry_run:
+                    shutil.rmtree(dirpath, ignore_errors=True)
+                    remove_all_schemas_section(db_id)
                 state["rows"].pop(db_id, None)
             else:
                 report["dbs"]["errors"].append({"db": title, "op": "query", "error": "404 (strike 1 — will remove on 2nd)"})
@@ -782,8 +792,8 @@ def refresh_db(api, users, db_id, dirname, state, report, args, discovered):
             changed.append(rid)
         new_rstate[rid] = le
         out_rows.append(vals)
-        if args.dry_run:
-            continue
+        # a dry run still probes (upsert_row_md writes nothing under it), so its
+        # request count is the real run's
         if old is None or line_changed or le_changed:
             need_probe = (old is None) or le_changed
             if need_probe and probe_mode == "enriched":
@@ -897,6 +907,8 @@ def upsert_row_md(api, users, page, db_id, db_title, cols, dirpath, probe, state
     # change and first sight during state seeding alike, so it can't tell an
     # existing annotation to go
     txt = render_row_md(page, db_id, db_title, cols, users, enrichment)
+    if args.dry_run:
+        return
     if old_name and old_name != new_name:
         try:
             os.remove(os.path.join(dirpath, old_name))
@@ -1098,13 +1110,15 @@ def _dir_of_page(pid, meta, page_index, row_index, api, users, depth):
     path = page_index.get(pid)
     if path:
         d = path[:-3]
-        os.makedirs(d, exist_ok=True)
+        if not DRY_RUN:
+            os.makedirs(d, exist_ok=True)
         return d
     hit = row_index.get(pid)
     if hit:
         dirname, fname = hit
         d = os.path.join(DBS, dirname, fname[:-3])
-        os.makedirs(d, exist_ok=True)
+        if not DRY_RUN:
+            os.makedirs(d, exist_ok=True)
         return d
     pm = meta.get(pid)
     if pm is None:
@@ -1187,7 +1201,8 @@ def walk_content_page(api, users, page_meta, page_index, report, args, meta=None
                                     row_index if row_index is not None else {}, api, users)
         if not dest_dir:
             dest_dir = os.path.join(WS, "_unplaced")
-            os.makedirs(dest_dir, exist_ok=True)
+            if not args.dry_run:
+                os.makedirs(dest_dir, exist_ok=True)
             report["notes"].append(f"new page {pid[:8]} '{title[:40]}' has no locatable parent -> workspace/_unplaced/ (retried each run)")
     new_name = f"{sanitize(title)} {pid}.md"
     new_path = os.path.join(dest_dir, new_name)
@@ -2236,7 +2251,7 @@ def consume_db_events(state, report, discovered):
             report["notes"].append(f"webhook: database.deleted for '{known[target][:40]}' — removal confirms this run")
         elif etype.endswith((".created", ".undeleted")) and target not in known:
             discovered.add("db:" + target)
-    if not events:
+    if DRY_RUN:
         return
     jsave(path, {})  # consumed (sweeps are the backstop for any race)
     log(f"consumed {len(events)} webhook db event(s)")
@@ -2807,12 +2822,11 @@ def phase_comment_audit_rows(api, users, state, report, args, discovered=None):
             expand_truncated_props(api, page, title, report)
             csvp = db_csv_path(dirpath)
             cols = csv_cols(csvp)
-            if cols and not args.dry_run:
+            if cols:
                 upsert_row_md(api, users, page, row_to_db[rid], title, cols, dirpath, "scan",
                               state, report, args, md_idx=idx, discovered=discovered)
-                update_csv_row(csvp, cols, rid, page, users)
-            elif cols:
-                probe_row(api, users, page["id"], dirpath, report, discovered=discovered)
+                if not args.dry_run:
+                    update_csv_row(csvp, cols, rid, page, users)
             done += 1
         except ApiError as e:
             report["dbs"]["errors"].append({"db": title, "op": f"comment audit {rid[:8]}",
@@ -3237,6 +3251,8 @@ def main():
     # on an fd for the life of the process (see take_lock), so there is nothing to
     # keep referenced here. Exit 3 distinguishes contention from a usage error (2)
     # for anything reading the status.
+    global DRY_RUN
+    DRY_RUN = args.dry_run
     if args.mode in WRITE_MODES and not args.dry_run:
         try:
             take_lock()
@@ -3343,7 +3359,8 @@ def main():
         report["requests_by_endpoint"] = dict(api.by_endpoint.most_common())
         report["rate429"] = api.r429
         report["duration_s"] = int(time.time() - t0)
-        users.save()
+        if not args.dry_run:
+            users.save()
         if args.mode == "rows":
             # A rows run persists only what it actually changed: the rows it
             # probed may have joined the audit pool or had their comments read.

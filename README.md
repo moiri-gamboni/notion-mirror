@@ -150,6 +150,9 @@ Manual operations, from the repository root with `NOTION_MIRROR` set:
 
 ```bash
 python3 refresh.py --mode daily                      # everything incremental
+python3 refresh.py --mode daily --dry-run            # every read a real run makes, no writes:
+                                                     # the report (last-run-report.dry-run.*)
+                                                     # is the estimate of a night's requests
 python3 refresh.py --mode full-comments              # manual full comment sweep (hours)
 python3 refresh.py --mode validate --dbs "Meetings"  # property-table regression check
 python3 refresh.py --mode validate --refetch --dbs "Tasks"   # body+comment renderer, live

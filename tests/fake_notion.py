@@ -63,8 +63,10 @@ class FakeUsers:
 class FakeNotion:
     CHILDREN = re.compile(r"^/blocks/([0-9a-f-]{32,36})/children$")
 
-    def __init__(self, search=(), pages=None, children=None, comments=None):
+    def __init__(self, search=(), pages=None, children=None, comments=None, dbs=None):
         self.search = list(search)
+        # db id32 -> (GET /databases/{id} response, [row page objects])
+        self.dbs = {refresh.undash(k): v for k, v in (dbs or {}).items()}
         self.pages = {refresh.undash(k): v for k, v in (pages or {}).items()}
         self.children = {refresh.undash(k): v for k, v in (children or {}).items()}
         self.comments = {refresh.undash(k): v for k, v in (comments or {}).items()}
@@ -87,7 +89,19 @@ class FakeNotion:
             if pid in self.pages:
                 return self.pages[pid]
             raise refresh.ApiError(404, "not found")
+        if path.startswith("/databases/"):
+            did = refresh.undash(path.split("/databases/", 1)[1])
+            if did in self.dbs:
+                return dict(self.dbs[did][0])
+            raise refresh.ApiError(404, "not found")
         raise AssertionError(f"unexpected GET {path}")
+
+    def query_rows(self, path, body=None, ver=None):
+        self._count("POST", path)
+        did = refresh.undash(path.split("/databases/", 1)[1].split("/", 1)[0])
+        if did not in self.dbs:
+            raise refresh.ApiError(404, "not found")
+        return list(self.dbs[did][1])
 
     def post(self, path, body=None, ver=None):
         raise AssertionError(f"unexpected POST {path}")
@@ -95,7 +109,8 @@ class FakeNotion:
     def paginate(self, method, path, body=None, params=None, ver=None):
         self._count(method, path, params)
         if method == "POST" and path == "/search":
-            yield from self.search
+            if ((body or {}).get("filter") or {}).get("value") == "page":
+                yield from self.search
             return
         if path == "/comments":
             yield from self.comments.get(refresh.undash(params["block_id"]), [])
