@@ -1333,12 +1333,17 @@ _WEBHOOK_CAPTURES = None
 
 def webhook_captures():
     """page_id32 -> [(anchor, comment dict)] from the receiver's capture log
-    (see webhook_receiver.py). Loaded once per run; deduped by comment id."""
+    (see webhook_receiver.py). Loaded once per run; deduped by comment id.
+
+    The *latest* capture of a comment wins, at the position of its first: the
+    receiver re-captures a whole thread on every comment.* event, so a later
+    record of an edited comment carries its current text. Each comment dict is
+    a copy carrying its record's `captured_at` under `_captured_at`, which is
+    what `fold_bullets` orders a capture against a scan by."""
     global _WEBHOOK_CAPTURES
     if _WEBHOOK_CAPTURES is not None:
         return _WEBHOOK_CAPTURES
     out = {}
-    seen = set()
     path = os.path.join(STATE, paths.CAPTURE)
     if os.path.exists(path):
         for ln in open(path):
@@ -1347,13 +1352,14 @@ def webhook_captures():
             except json.JSONDecodeError:
                 continue
             for c in e.get("comments", []):
-                key = (e.get("page_id"), c.get("id"))
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.setdefault(e.get("page_id", ""), []).append((e.get("anchor", "(page-level)"), c))
-    _WEBHOOK_CAPTURES = out
-    return out
+                d = out.setdefault(e.get("page_id", ""), {})
+                key = c.get("id")
+                if key is None and None in d:
+                    continue  # an id-less capture has no identity to update by
+                d[key] = (e.get("anchor", "(page-level)"),
+                          dict(c, _captured_at=e.get("captured_at", "")))
+    _WEBHOOK_CAPTURES = {pid: list(d.values()) for pid, d in out.items()}
+    return _WEBHOOK_CAPTURES
 
 
 def captured_text(c):
@@ -1375,15 +1381,7 @@ def union_captured(bullets, pid, users, row_format=False):
     ids, texts = live_index(bullets)
     out = list(bullets)
     for anchor, c in caps:
-        who = users.name({"id": c.get("author_id", "")}) if c.get("author_id") else "?"
-        when = (c.get("created_time") or "")[:10]
-        text = captured_text(c)
-        if row_format:
-            t = text.replace("\r", "").replace("\n", "\n  ")
-            b = f"- _{who} ({when}):_ {t}"
-        else:
-            b = f'- **on** "{anchor}" — {who} ({when}): {text}'
-        b = stamp_cid(b, undash(c.get("id") or ""), undash(c.get("discussion_id") or ""))
+        b = captured_bullet(anchor, c, users, row_format)
         if still_live(b, ids, texts):
             continue
         out.append(annotate_resolved(b, today))
@@ -1393,6 +1391,221 @@ def union_captured(bullets, pid, users, row_format=False):
             ids.add(bullet_cid(b))
         texts.add(bullet_text_key(b))
     return out
+
+
+def captured_bullet(anchor, c, users, row_format=False):
+    """A captured comment rendered as the bullet a scan of it would produce."""
+    who = users.name({"id": c.get("author_id", "")}) if c.get("author_id") else "?"
+    when = (c.get("created_time") or "")[:10]
+    text = captured_text(c)
+    if row_format:
+        t = text.replace("\r", "").replace("\n", "\n  ")
+        b = f"- _{who} ({when}):_ {t}"
+    else:
+        b = f'- **on** "{anchor}" — {who} ({when}): {text}'
+    return stamp_cid(b, undash(c.get("id") or ""), undash(c.get("discussion_id") or ""))
+
+
+# --------------------------------------------- folding captures without a scan
+#
+# The webhook capture is the mirror's primary comment channel: the receiver
+# fetches a thread within about a minute of any comment.* event, so a new or
+# edited comment is already on disk before the nightly starts. Folding those
+# records into `_comments.md` and the row files costs no requests. What a fold
+# cannot see is resolution — Notion fires no event when a thread is resolved,
+# and a resolved comment simply stops being listed — so that is left to the
+# rolling per-block audit, the one place a comment scan still happens.
+
+
+def _parse_ts(s):
+    """An ISO timestamp (either the API's `…Z` or the receiver's `…+00:00`) as an
+    aware datetime, or None — `captured_at: "backfill"` included."""
+    try:
+        t = dt.datetime.fromisoformat((s or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=UTC)
+
+
+def fold_bullets(stored, caps, last_scan, users, row_format, deletions, today):
+    """Stored bullets + webhook captures -> (bullets, stats), no request made.
+
+    `last_scan` is when the page's comments were last read from the API, and it
+    decides how much a capture may say. A capture taken *after* it is newer
+    than anything stored: its comment is added open, or updates an open stored
+    bullet with the same id in place (an edit). A capture taken before it is
+    older than the scan, which listed every comment still open at the time — so
+    it may only add a comment the scan did not have, and then as resolved by
+    the scan's date. That keeps a fold from reverting a scan, and makes it
+    idempotent: folding the same log twice changes nothing.
+
+    With no scan on record a capture may still add, since a comment missing
+    from the file never reached it, but it never rewrites a stored bullet: that
+    bullet may come from a later read than the capture. Nor does a capture
+    without raw `rich_text` (written before 2026-08-06): its flattened text is
+    a lossier rendering of the same comment, not a newer one.
+
+    `deletions` (comment id -> date, from comment.deleted events) annotates a
+    stored bullet as gone; deletion is final, so no ordering is needed."""
+    out = list(stored)
+    pos = {c: i for i, c in enumerate(map(bullet_cid, out)) if c}
+    # a stored bullet with no id (a `legacy` shim, or pre-migration) is matched by
+    # text, as `still_live` does: the capture is the same comment, and adding it
+    # beside the shim is the duplicate the id migration exists to prevent
+    legacy = {bullet_text_key(b) for b in out if not bullet_cid(b)}
+    scan_t = _parse_ts(last_scan)
+    gone_by = (last_scan or "")[:10] or today
+    added = updated = deleted = 0
+    for anchor, c in caps:
+        b = captured_bullet(anchor, c, users, row_format)
+        cid = bullet_cid(b)
+        cap_t = _parse_ts(c.get("_captured_at"))
+        fresh = cap_t is not None and (scan_t is None or cap_t > scan_t)
+        if cid in pos:
+            i = pos[cid]
+            if fresh and scan_t is not None and c.get("rich_text") \
+                    and not RESOLVED_MARK.search(out[i]) \
+                    and bullet_text_key(out[i]) != bullet_text_key(b):
+                out[i] = b
+                updated += 1
+            continue
+        if bullet_text_key(b) in legacy or (not cid and still_live(b, *live_index(out))):
+            continue  # already on disk under no id, matched by text
+        out.append(b if fresh else annotate_resolved(b, gone_by))
+        added += 1
+        if cid:
+            pos[cid] = len(out) - 1
+    for i, b in enumerate(out):
+        day = deletions.get(bullet_cid(b))
+        if day and not RESOLVED_MARK.search(b):
+            out[i] = annotate_resolved(b, day)
+            deleted += 1
+    return out, {"added": added, "updated": updated, "deleted": deleted}
+
+
+def webhook_deletions():
+    """comment id32 -> date of its comment.deleted event, over every retained
+    segment of the receiver's event log. The payload names the comment as the
+    event's entity, which is all a fold needs to mark it."""
+    base = os.path.join(STATE, "webhook-events.jsonl")
+    out = {}
+    for path in [f"{base}.{i}" for i in (3, 2, 1)] + [base]:
+        if not os.path.exists(path):
+            continue
+        with open(path, errors="replace") as f:
+            for ln in f:
+                if '"comment.deleted"' not in ln:
+                    continue
+                try:
+                    e = json.loads(ln)
+                except json.JSONDecodeError:
+                    continue
+                cid = undash(((e.get("entity") or {}).get("id")) or "")
+                if e.get("type") == "comment.deleted" and cid:
+                    out[cid] = (e.get("timestamp") or e.get("received_at") or "")[:10]
+    return out
+
+
+def with_comments(enrichment, bullets):
+    """A row's enrichment with its comments region replaced by `bullets` and
+    everything before it — the body region, a probe annotation — kept verbatim.
+    Byte-identical to what `probe_row` writes for the same body and bullets."""
+    base = strip_comments_section(enrichment or "").rstrip("\n")
+    if not bullets:
+        return base + "\n" if base.strip() else ""
+    tail = "\n".join(comments_section_lines(bullets))
+    if not base.strip():
+        return "\n\n" + tail.strip("\n") + "\n"
+    return base + "\n" + tail + "\n"
+
+
+def fold_captures(users, state, report, args):
+    """Fold every captured comment into the mirror: `_comments.md` for content
+    pages, the comments region for DB rows. No requests (bar a user-name lookup
+    for an author not seen before). Pages the mirror has not captured yet are
+    left for a later run, which folds them then.
+
+    Each page's and row's last full comment scan comes from `comment-scan.json`,
+    which records only complete per-block reads (a row's first entry is its
+    first audit). A row with none yet takes every capture as current: whatever
+    a capture holds that its file lacks never reached it — a capped probe
+    carried the old record over without looking — and the audit decides within
+    one cycle whether it is still open."""
+    caps = webhook_captures()
+    deletions = webhook_deletions()
+    if not caps and not deletions:
+        return
+    today = dt.datetime.now(UTC).strftime("%Y-%m-%d")
+    stats = {"captures": sum(len(v) for v in caps.values()), "pages": 0, "rows": 0,
+             "added": 0, "updated": 0, "deleted": 0, "unplaced": 0}
+    by_cid_page = collections.defaultdict(dict)  # page -> {cid: date} for deletions
+    meta, _order = load_meta_jsonl()
+    _head, sections, _app = load_comments_md()
+    section_of = {s["id"]: s for s in sections}
+    rows = row_md_global_index()
+    pages = set(caps)
+    # a deletion on a page with no capture left in the log still has to land
+    cid_home = {}
+    for pid, cs in caps.items():
+        for _a, c in cs:
+            cid_home[undash(c.get("id") or "")] = pid
+    for s in sections:
+        for b in split_bullets(s["body"]):
+            if bullet_cid(b):
+                cid_home.setdefault(bullet_cid(b), s["id"])
+    for cid, day in deletions.items():
+        pid = cid_home.get(cid)
+        if pid:
+            by_cid_page[pid][cid] = day
+            pages.add(pid)
+
+    page_updates = {}
+    for pid in sorted(p for p in pages if p):
+        pc, dels = caps.get(pid, []), by_cid_page.get(pid, {})
+        if pid in rows:
+            dirname, fname = rows[pid]
+            path = os.path.join(DBS, dirname, fname)
+            try:
+                txt = open(path).read()
+            except OSError:
+                continue
+            if MARKER not in txt:
+                continue
+            head, enr = txt.split(MARKER, 1)
+            old = split_bullets(extract_comments_body(enr), prefix="- _")
+            new, st = fold_bullets(old, pc, state["comment_scans"].get(pid, ""), users,
+                                   True, dels, today)
+            if new != old:
+                stats["rows"] += 1
+                for k in ("added", "updated", "deleted"):
+                    stats[k] += st[k]
+                if not args.dry_run:
+                    with open(path, "w") as f:
+                        f.write(head + MARKER + (with_comments(enr, new) or "\n"))
+                    state["comment_rows"].setdefault(pid, "")
+            continue
+        m = meta.get(pid)
+        sec = section_of.get(pid)
+        if sec is None and not (m and m.get("parent_type") in ("page_id", "block_id", "workspace")):
+            stats["unplaced"] += 1
+            continue
+        old = split_bullets(sec["body"]) if sec else []
+        new, st = fold_bullets(old, pc, state["comment_scans"].get(pid, ""), users,
+                               False, dels, today)
+        if new != old:
+            stats["pages"] += 1
+            for k in ("added", "updated", "deleted"):
+                stats[k] += st[k]
+            page_updates[pid] = {"title": (m or {}).get("title") or (sec or {}).get("title")
+                                 or "(untitled)", "bullets": new}
+    if page_updates and not args.dry_run:
+        update_comments_md(page_updates, report, merge=False)
+    report["comments"]["folded"] = stats
+    report["comments"]["added"] += stats["added"]
+    report["comments"]["retained"] += stats["deleted"]
+    log(f"webhook fold: {stats['added']} added, {stats['updated']} updated, "
+        f"{stats['deleted']} deleted across {stats['pages']} page(s) and {stats['rows']} row(s) "
+        f"({stats['captures']} captured comments, {stats['unplaced']} on pages not mirrored yet)")
 
 
 # ------------------------------------------- comment-contamination assert (A4)
@@ -1756,11 +1969,15 @@ def run_coverage_assert(report, state=None, root=None, exclusions_path=None, wri
         return None
 
 
-def update_comments_md(updates, report):
+def update_comments_md(updates, report, merge=True):
     """updates: {pid: {"title":.., "bullets":[..]}} — replace/add sections.
     Append-only semantics: comments that vanish from the API are retained with a
     resolved/deleted annotation (the API cannot see resolved threads, so dropping
-    them would erase history — they are kept by design)."""
+    them would erase history — they are kept by design).
+
+    `merge=False` is for bullets that already are the whole section — a fold,
+    which started from the stored section — so nothing is annotated here and
+    the added/retained counts are the caller's to record."""
     if not updates:
         return
     today = dt.datetime.now(UTC).strftime("%Y-%m-%d")
@@ -1771,8 +1988,12 @@ def update_comments_md(updates, report):
     n_add = n_ret = 0
     for pid, u in updates.items():
         old = by_id.get(pid)
-        merged, newly_retained = merge_comment_bullets(old["body"] if old else "", u["bullets"], today)
-        n_ret += newly_retained
+        if merge:
+            merged, newly_retained = merge_comment_bullets(old["body"] if old else "",
+                                                           u["bullets"], today)
+            n_ret += newly_retained
+        else:
+            merged = list(u["bullets"])
         if not merged:
             if old:
                 sections.remove(old)
@@ -1787,8 +2008,9 @@ def update_comments_md(updates, report):
             s = {"title": u["title"], "id": pid, "body": body}
             sections.append(s)
             by_id[pid] = s
-    report["comments"]["added"] += n_add
-    report["comments"]["retained"] += n_ret
+    if merge:
+        report["comments"]["added"] += n_add
+        report["comments"]["retained"] += n_ret
     total = sum(s["body"].count("- **on**") for s in sections)
     note = " (plus the truncation-backfill appendix)" if appendix else ""
     tail = (f"\n---\n_{total} comments across {len(sections)} pages{note}. Resolved/deleted threads are"
@@ -3277,6 +3499,7 @@ def main():
         else:
             check_webhook_liveness(report)
             consume_db_events(state, report, discovered)
+            run_phase("fold", fold_captures, users, state, report, args)
             queue_budget = int(os.environ.get("NOTION_REFRESH_QUEUE_BUDGET", "0")) or max(1000, budget // 3)
             run_phase("queue", phase_queue, api, users, state, report, args, max_req=queue_budget,
                       discovered=discovered)
