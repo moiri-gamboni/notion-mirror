@@ -46,8 +46,7 @@ class ReceiverRoutingTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         d = self.tmp.name
-        for name, path in (("PRIORITY", os.path.join(d, "webhook-priority-pages.json")),
-                           ("PROPS_QUEUE", os.path.join(d, "props-probe-queue.json")),
+        for name, path in (("PROPS_QUEUE", os.path.join(d, "props-probe-queue.json")),
                            ("DB_EVENTS", os.path.join(d, "webhook-db-events.json"))):
             p = mock.patch.object(wr, name, path)
             p.start()
@@ -64,11 +63,9 @@ class ReceiverRoutingTest(unittest.TestCase):
         self.route(REAL_PROPERTIES_UPDATED)
         self.assertEqual(self.queue(), [{"kind": "props_probe", "row": REAL_PAGE_ID}])
 
-    def test_it_never_enqueues_a_row_probe_or_marks_the_page_priority(self):
-        # webhook-priority-pages.json is what phase_queue turns into row_probe
-        # entries; landing there is the failure being reversed.
+    def test_it_never_enqueues_a_row_probe(self):
         self.route(REAL_PROPERTIES_UPDATED)
-        self.assertFalse(os.path.exists(wr.PRIORITY))
+        self.assertEqual(os.listdir(self.tmp.name), ["props-probe-queue.json"])
         for entry in self.queue():
             self.assertEqual(entry["kind"], "props_probe")
 
@@ -93,10 +90,13 @@ class ReceiverRoutingTest(unittest.TestCase):
         self.route(ev)
         self.assertEqual(self.queue(), [])
 
-    def test_content_updated_still_goes_to_the_priority_file(self):
-        self.route({"type": "page.content_updated", "entity": {"id": "a" * 32}, "data": {}})
-        self.assertEqual(refresh.jload(wr.PRIORITY, []), ["a" * 32])
-        self.assertEqual(self.queue(), [])
+    def test_body_events_are_left_to_the_nightly_sweeps(self):
+        """content_updated/created/moved/deleted move last_edited_time, which the
+        row query and the page search diff every night; a queue for them only
+        made the row sweep probe the same rows twice."""
+        for etype in ("page.content_updated", "page.created", "page.moved", "page.deleted"):
+            self.route({"type": etype, "entity": {"id": "a" * 32}, "data": {}})
+        self.assertEqual(os.listdir(self.tmp.name), [])
 
 
 class DrainTestCase(MirrorTestCase):

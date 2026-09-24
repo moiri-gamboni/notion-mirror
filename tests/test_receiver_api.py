@@ -127,8 +127,7 @@ class StateTestCase(unittest.TestCase):
         for name, path in (("STATE", d),
                            ("EVENTS", os.path.join(d, "webhook-events.jsonl")),
                            ("CAPTURE", os.path.join(d, "webhook-comments-capture.jsonl")),
-                           ("OFFSET", os.path.join(d, "webhook-capture-offset.json")),
-                           ("PRIORITY", os.path.join(d, "webhook-priority-pages.json"))):
+                           ("OFFSET", os.path.join(d, "webhook-capture-offset.json"))):
             p = mock.patch.object(wr, name, path)
             p.start()
             self.addCleanup(p.stop)

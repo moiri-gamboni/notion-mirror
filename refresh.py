@@ -41,6 +41,7 @@ import datetime as dt
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -447,7 +448,7 @@ def annotate_probe_failure(enrichment, day):
 
 
 def probe_row(api, users, page_id, dest_dir, report, old_comments_body="",
-              max_blocks=800, block_comment_cap=25, discovered=None, comments="scan",
+              max_blocks=800, block_comment_cap=None, discovered=None, comments="scan",
               last_scan=""):
     """Fetch body + comments for a DB row -> enrichment string ('' if none).
 
@@ -889,12 +890,6 @@ def upsert_row_md(api, users, page, db_id, db_title, cols, dirpath, probe, state
             # comments were carried over unverified, so the row is not current
             stale = "block-comment scan capped" if capped else None
             fully_read = not capped
-        except Budget:
-            state["queue"].append({"kind": "row_probe", "db": db_id, "row": rid})
-            enrichment = None
-            # deliberately unannotated: the queue entry already records the row as
-            # owed a probe, and the budget wall stops every row behind it at once —
-            # marking them would rewrite thousands of files and unwrite them next run
         except ApiError as e:
             report["dbs"]["errors"].append({"db": db_title, "op": f"probe {rid[:8]}", "error": str(e)[:160]})
             enrichment = None
@@ -2140,7 +2135,6 @@ def new_report(mode):
                          "row_block_scans_capped": 0,
                          "contamination_breaches": 0},
             "attachments": {"downloaded": [], "failed": []},
-            "deferred": {"row_probes_queued": 0},
             # Empty until the coverage assert runs, so "the assert did not run"
             # and "the assert found nothing" stay distinguishable in the report.
             "coverage": {},
@@ -2221,11 +2215,25 @@ def report_md(r):
     if c.get("contamination_breaches"):
         L.append(f"- **FAILED: {c['contamination_breaches']} comment text(s) attributed to more than "
                  f"{MAX_COMMENT_PAGES} pages** — see Notes")
-    sh = c.get("shard")
-    if sh:
-        L.append(f"- rolling comment scan: {sh['human_scanned']}/{sh['human_total']} human pages "
-                 f"+ {sh['auto_scanned']}/{sh['auto_total']} automation pages this run "
-                 f"({sh['requests']} req; full human cycle ≈ {sh['human_cycle_days_est']} days)")
+    fo = c.get("folded")
+    if fo:
+        L.append(f"- webhook fold: +{fo['added']} added, {fo['updated']} edited, "
+                 f"{fo['deleted']} deleted across {fo['pages']} pages and {fo['rows']} rows, "
+                 f"no requests ({fo['unplaced']} captured comments on pages not mirrored yet)")
+    au = c.get("audit")
+    if au:
+        bits = []
+        if "pages_scanned" in au:
+            bits.append(f"{au['pages_scanned']}/{au['pages_total']} human pages "
+                        f"({au['page_cycle_days']:g}-day cycle; oldest scan now "
+                        f"{(au.get('oldest_page_scan') or 'never')[:10]})")
+        if "rows_scanned" in au:
+            bits.append(f"{au['rows_scanned']}/{au['rows_pool']} comment-bearing rows "
+                        f"({au['row_cycle_days']:g}-day cycle)")
+        L.append("- per-block comment audit: " + "; ".join(bits))
+    rp = c.get("row_probes")
+    if rp:
+        L.append(f"- row probes: {rp['carry']} carried their comments, {rp['scan']} read them")
     a = r["attachments"]
     if a["downloaded"] or a["failed"]:
         L += ["", f"## Attachments — {len(a['downloaded'])} downloaded, {len(a['failed'])} failed"]
@@ -2254,8 +2262,6 @@ def report_md(r):
         L += ["", f"## Coverage — {len(cov['findings'])} new gap(s) "
               f"({cov['absent']} referenced-but-absent, {cov['excluded']} excluded; "
               f"{cov['scan_s']}s scan)"]
-    if r["deferred"]["row_probes_queued"]:
-        L += ["", f"Deferred to next run: {r['deferred']['row_probes_queued']} row body/comment probes (budget)."]
     if r["notes"]:
         L += ["", "## Notes"] + [f"- {n}" for n in r["notes"]]
     return "\n".join(L) + "\n"
@@ -2292,8 +2298,9 @@ def consume_db_events(state, report, discovered):
 def check_webhook_liveness(report):
     """A webhook feed cannot detect its own gaps: if the receiver dies, events just
     stop and nothing local says so — the mirror quietly loses its freshness path
-    while every run still looks healthy. phase_comment_shard already restores the
-    full blind-scan budget once the feed is 48h stale, but silently; warn first.
+    while every run still looks healthy: comments would then reach it only
+    through the rolling audit, days late, and a resolved-before-audit comment
+    never. Warn.
     Threshold is set off the measured distribution, not a guess: over the first
     3.2 days of the subscription (13,122 events) the largest inter-event gap was
     1.69h and p99 was 0.15h, and the daily job-feed refresh alone guarantees a
@@ -2307,95 +2314,6 @@ def check_webhook_liveness(report):
             f"⚠ webhook feed silent for {quiet_h:.0f}h (largest gap ever observed: 1.7h) — check "
             f"`systemctl status notion-webhook` and the integration's webhook subscription. "
             f"The blind comment scan returns to full budget once the feed is 48h stale.")
-
-
-def phase_queue(api, users, state, report, args, max_req=None, discovered=None):
-    # webhook events naming DB rows -> probe those rows this run
-    prio_path = os.path.join(STATE, "webhook-priority-pages.json")
-    prio = set(jload(prio_path, []))
-    if prio and state["rows"]:
-        row_to_db = {rid: db for db, rows in state["rows"].items() for rid in rows}
-        moved = 0
-        for pid in list(prio):
-            db = row_to_db.get(pid)
-            if db:
-                state["queue"].append({"kind": "row_probe", "db": db, "row": pid})
-                prio.discard(pid)
-                moved += 1
-        if moved and not args.dry_run:
-            jsave(prio_path, sorted(prio))
-            log(f"webhook events -> {moved} row probe(s) queued")
-    q = state["queue"]
-    if not q:
-        return
-    log(f"draining probe queue: {len(q)} entries")
-    dirs = db_dirs()
-    start = api.n
-    remaining, skipped = [], 0
-    mds = {}  # dirpath -> {row id: filename}; per-row listdir is O(n^2) on big DBs
-    for n, item in enumerate(q):
-        if item.get("kind") != "row_probe":
-            continue
-        # the queue is opportunistic freshness work, the DB sweep is the correctness
-        # backbone — cap the drain so a burst of events can't starve every later phase
-        # (2,962 queued entries ate 70% of the 07-31 budget and the comment shard got
-        # nothing).
-        if max_req is not None and api.n - start >= max_req:
-            remaining += [i for i in q[n:] if i.get("kind") == "row_probe"]
-            report["notes"].append(f"probe queue capped at {max_req} req — "
-                                   f"{len(remaining)} entries deferred to next run")
-            break
-        dbid, rid = item["db"], item["row"]
-        dirname = dirs.get(dbid)
-        if not dirname:
-            continue
-        dirpath = os.path.join(DBS, dirname)
-        schema = jload(os.path.join(dirpath, "_schema.json"), {})
-        idx = mds.get(dirpath)
-        if idx is None:
-            idx = mds[dirpath] = index_row_mds(dirpath)
-        # same enriched-only rule the sweep applies (db_probe_policy): in big feed DBs
-        # where <5% of rows carry a body/comments, probe only rows that already have
-        # enrichment. Without this a webhook-named row costs a body+comment walk that
-        # the sweep would have skipped as pointless — the two paths disagreed row for
-        # row (one job feed: 1,573 queued vs 1,906 skipped on the same run).
-        # ... except for a row the receiver has captured comments for. That
-        # capture reaches the mirror through union_captured, which runs only
-        # inside probe_row: the comment-audit pool seeds from rows where
-        # has_comments already holds, and the full sweep is content-pages-only.
-        # So on an unenriched row the probe is the capture's only door, and the
-        # policy verdict is cached 7 days while the DB stays under the threshold
-        # precisely because nothing is enriched — silent, and self-latching.
-        probe = True
-        if not webhook_captures().get(rid) and \
-                db_probe_policy(dirpath, len(state["rows"].get(dbid, {})), state, dbid) == "enriched":
-            old_md = idx.get(rid)
-            enr = existing_enrichment(os.path.join(dirpath, old_md)) if old_md else None
-            if not (enr and enr.strip()):
-                probe = False
-                skipped += 1
-        try:
-            page = api.get(f"/pages/{dashed(rid)}")
-            expand_truncated_props(api, page, schema.get("title", ""), report)
-            cols = [c for c in (read_csv(next((os.path.join(dirpath, f) for f in os.listdir(dirpath)
-                                               if f.endswith('.csv') and ID32.search(f)), ""))[0] or [])[1:]]
-            upsert_row_md(api, users, page, dbid, schema.get("title", ""), cols, dirpath, probe,
-                          state, report, args, md_idx=idx, discovered=discovered)
-        except Budget:
-            # out of requests: keep this entry and every one behind it, and stop.
-            # Looping on would re-raise per item and inflate the skip counter with
-            # decisions about rows we never touched.
-            if not probe:
-                skipped -= 1
-            remaining += [i for i in q[n:] if i.get("kind") == "row_probe"]
-            break
-        except ApiError:
-            pass
-    state["queue"] = remaining + [i for i in q if i.get("kind") != "row_probe"]
-    if skipped:
-        report["notes"].append(f"probe queue: {skipped} body/comment probe(s) skipped "
-                               f"(enriched-only policy)")
-    log(f"probe queue: {api.n - start} req, {skipped} probes skipped, {len(remaining)} deferred")
 
 
 # ------------------------------------------------- row-scoped refresh (--mode rows)
@@ -2585,14 +2503,9 @@ def drain_props_probe(api, users, state, report, args, max_req, discovered=None)
 def phase_rows(api, users, state, report, args, ids, discovered):
     """Refresh exactly the rows named on the command line, and nothing else.
 
-    Deliberately not phase_queue. That folds webhook-priority-pages.json into
-    the persisted queue, jsaves the shrunken file *before* draining, and then
-    drains the whole persisted queue capped only by max_req — measured at design
-    time as 120 queued entries plus 533 priority pages, i.e. up to 653 rows at
-    3-8 requests each, on a tick budgeted at 10-30. It also skips
-    consume_db_events, which clears webhook-db-events.json: a phase with no
-    discovery of its own would eat the same-day capture signal for every newly
-    created database and give nothing back.
+    It skips consume_db_events, which clears webhook-db-events.json: a phase
+    with no discovery of its own would eat the same-day capture signal for
+    every newly created database and give nothing back.
 
     Every named row is probed unconditionally. db_probe_policy's enriched-only
     rule exists so a feed DB's churn cannot cost thousands of body walks in a
@@ -2622,7 +2535,6 @@ def phase_rows(api, users, state, report, args, ids, discovered):
                 discovered.add("db:" + db_id)
             continue
         dirpath, title, idx = row_render_target(dirname, mds)
-        qlen = len(state["queue"])
         try:
             expand_truncated_props(api, page, title, report)
             csvp = db_csv_path(dirpath)
@@ -2641,16 +2553,6 @@ def phase_rows(api, users, state, report, args, ids, discovered):
         except ApiError as e:
             stats["errors"].append({"row": rid, "error": str(e)[:160]})
             continue
-        if len(state["queue"]) > qlen:
-            # upsert_row_md absorbs a mid-probe Budget by queueing the row, and a
-            # rows run does not persist that queue — so the row is neither probed
-            # nor owed to anyone. Counting it refreshed would leave a tick that
-            # reads clean over a row whose body was never read, which is the
-            # failure this mode exists to make visible.
-            del state["queue"][qlen:]
-            report["budget_exhausted"] = True
-            stats["errors"].append({"row": rid, "error": "request budget hit mid-probe"})
-            break
         stats["refreshed"].append(rid)
         enr = existing_enrichment(os.path.join(dirpath, idx.get(rid, ""))) or ""
         for did in CHILD_DB_RE.findall(enr):
@@ -2908,127 +2810,125 @@ def scan_page_comments(api, users, m):
     return union_captured(comment_bullets(pl, bc), m["id"], users)
 
 
-def phase_comment_shard(api, users, meta, state, report, args, budget_req):
-    """Rolling per-block comment scan: comments don't bump last_edited_time and
-    the API has no global comments feed, so freshness costs one request per
-    block. Each run spends up to budget_req requests scanning the longest-
-    unscanned pages (90% human corpus, 10% automation subtrees), giving every
-    human page a rescan roughly weekly at the default budget."""
+def _audit_days(name, default):
+    """A cycle length in days from the environment; a bad value refuses the run
+    at the phase rather than quietly auditing some other share of the corpus."""
+    raw = os.environ.get(name, "").strip()
+    days = float(raw) if raw else float(default)
+    if days <= 0:
+        raise ValueError(f"{name}={raw!r}: an audit cycle must be a positive number of days")
+    return days
+
+
+def audit_share(total, days):
+    """How many of `total` to audit tonight so the whole set cycles in `days`."""
+    return min(total, math.ceil(total / days)) if total else 0
+
+
+def phase_comment_audit_pages(api, users, meta, state, report, args):
+    """The rolling per-block comment audit of the human content pages.
+
+    The one place a content page's comments are still read block by block, and
+    it exists for what no event reports: Notion fires nothing when a thread is
+    resolved, and a resolved comment simply stops being listed, so noticing it
+    takes a fresh read of every block. Sized by count, not requests: every human
+    page is rescanned once per NOTION_REFRESH_PAGE_AUDIT_DAYS (default 3), the
+    longest-unscanned first, so a page never scanned sorts to the front.
+    Automation subtrees are out of scope and never scanned."""
     page_index = index_workspace_pages()
     scans = state["comment_scans"]
-    content = [m for m in meta.values() if m.get("parent_type") in ("page_id", "block_id", "workspace")
-               and not m.get("in_trash") and not m.get("archived")]
-    # webhook feed active -> events point at what changed, so the blind scan
-    # shrinks to a slow audit; event-named pages always scan first.
-    prio_path = os.path.join(STATE, "webhook-priority-pages.json")
-    prio = set(jload(prio_path, []))
-    ev = os.path.join(STATE, "webhook-events.jsonl")
-    if os.path.exists(ev) and time.time() - os.path.getmtime(ev) < 48 * 3600:
-        reduced = int(os.environ.get("NOTION_REFRESH_COMMENT_BUDGET_WEBHOOK", "1500"))
-        if reduced < budget_req:
-            log(f"webhook feed active — shard budget {budget_req} -> {reduced}")
-            budget_req = reduced
-    human = [m for m in content if not _is_automation(m["id"], page_index)]
-    auto = [m for m in content if _is_automation(m["id"], page_index)]
-    prio_pages = [m for m in content if m["id"] in prio]
+    human = [m for m in meta.values()
+             if m.get("parent_type") in ("page_id", "block_id", "workspace")
+             and not m.get("in_trash") and not m.get("archived")
+             and not _is_automation(m["id"], page_index)]
+    days = _audit_days("NOTION_REFRESH_PAGE_AUDIT_DAYS", 3)
+    due = sorted(human, key=lambda m: (scans.get(m["id"], ""), m["id"]))[:audit_share(len(human), days)]
     updates = {}
-    start = api.n
-    counts = {"prio": 0, "human": 0, "auto": 0}
-    done = set()
-
-    def scan(pages, label, cap):
-        for m in sorted(pages, key=lambda x: scans.get(x["id"], "")):
-            if m["id"] in done:
-                continue
-            if api.n - start >= cap:
-                return
-            try:
-                updates[m["id"]] = {"title": m.get("title") or "(untitled)",
-                                    "bullets": scan_page_comments(api, users, m)}
-                scans[m["id"]] = now_iso()
-                counts[label] += 1
-                done.add(m["id"])
-                prio.discard(m["id"])
-            except Budget:
-                report["budget_exhausted"] = True
-                return
-            except ApiError as e:
-                scans[m["id"]] = now_iso()  # don't wedge the queue on a 404/403 page
-                done.add(m["id"])
-                prio.discard(m["id"])
-                report["pages"]["errors"].append({"id": m["id"], "title": m.get("title", ""),
-                                                  "error": f"comment shard: {e}"[:160]})
-
-    scan(prio_pages, "prio", budget_req)
-    scan(human, "human", budget_req)
-    # automation-subtree pages (DeltaLogs/recordings) are bot logs with no human
-    # comments — don't spend the blind-scan budget on them (webhooks/full-comments
-    # mode still cover the rare case). Give the whole budget to human pages.
-    # drop priority ids that are neither content pages nor rows (DB-level events,
-    # not-yet-swept new pages): the daily sweeps cover them, and they'd otherwise
-    # sit in the queue forever
-    known = {m["id"] for m in content}
-    row_ids = set().union(*state["rows"].values()) if state["rows"] else set()
-    prio &= (known | row_ids)
-
-    # rows carry comments too (1.5k+ known across the task, meeting and notes tables) and the
-    # page shard never touches them — cycle the longest-unaudited comment-bearing
-    # rows through the probe queue (drained next run; ~6-day full cycle), which
-    # is also the only way row resolved-thread annotations ever fire.
-    crows = state["comment_rows"]
-    if not crows:
-        seeded = 0
-        for db_id, dirname in db_dirs().items():
-            dirpath = os.path.join(DBS, dirname)
-            for f in os.listdir(dirpath):
-                if f.endswith(".md") and not f.startswith("_schema"):
-                    mm2 = ID32.search(f)
-                    if not mm2:
-                        continue
-                    try:
-                        if has_comments(open(os.path.join(dirpath, f)).read()):
-                            crows[mm2.group(1)] = ""
-                            seeded += 1
-                    except OSError:
-                        continue
-        log(f"comment-row audit seeded: {seeded} rows")
-    row_to_db = {rid: db for db, rows in state["rows"].items() for rid in rows}
-    queued = 0
-    per_run = int(os.environ.get("NOTION_REFRESH_ROW_COMMENT_AUDIT", "120"))
-    for rid in sorted(crows, key=lambda r: crows[r]):
-        if queued >= per_run:
-            break
-        db = row_to_db.get(rid)
-        if db is None:
-            crows.pop(rid, None)  # row deleted since seeding
-            continue
-        state["queue"].append({"kind": "row_probe", "db": db, "row": rid})
-        crows[rid] = now_iso()
-        queued += 1
-    if queued:
-        report["comments"]["shard_rows_queued"] = queued
-        log(f"comment-row audit: {queued} probes queued for next run "
-            f"(pool {len(crows)}, cycle ≈ {round(len(crows) / max(1, queued), 1)} runs)")
-    if not args.dry_run:
-        jsave(prio_path, sorted(prio))
+    for n, m in enumerate(due, 1):
+        try:
+            updates[m["id"]] = {"title": m.get("title") or "(untitled)",
+                                "bullets": scan_page_comments(api, users, m)}
+        except ApiError as e:
+            report["pages"]["errors"].append({"id": m["id"], "title": m.get("title", ""),
+                                              "error": f"comment audit: {e}"[:160]})
+        scans[m["id"]] = now_iso()  # an erroring page still moves to the back
+        if n % 100 == 0:
+            log(f"page comment audit {n}/{len(due)} (req={api.n})")
     if not args.dry_run:
         update_comments_md(updates, report)
-    spent = api.n - start
-    report["comments"]["pages_rescanned"] += counts["prio"] + counts["human"] + counts["auto"]
-    report["comments"]["shard"] = {
-        "prio_scanned": counts["prio"],
-        "human_scanned": counts["human"], "auto_scanned": counts["auto"], "requests": spent,
-        "human_total": len(human), "auto_total": len(auto),
-        "human_cycle_days_est": round(len(human) / counts["human"], 1) if counts["human"] else None,
-    }
-    log(f"comment shard: {counts['prio']}p+{counts['human']}h+{counts['auto']}a pages, {spent} req "
-        f"(human corpus {len(human)}, est cycle {report['comments']['shard']['human_cycle_days_est']}d)")
+    report["comments"]["pages_rescanned"] += len(updates)
+    oldest = min((scans.get(m["id"], "") for m in human), default="")
+    report["comments"].setdefault("audit", {}).update({
+        "pages_scanned": len(due), "pages_total": len(human), "page_cycle_days": days,
+        "oldest_page_scan": oldest})
+    log(f"page comment audit: {len(due)}/{len(human)} human pages ({days:g}-day cycle)")
+
+
+def seed_comment_rows(state):
+    """The row audit's pool, from disk, when there is none: every row file that
+    carries a comments region. Rows join it on write thereafter."""
+    crows = state["comment_rows"]
+    for _db_id, dirname in db_dirs().items():
+        dirpath = os.path.join(DBS, dirname)
+        for f in os.listdir(dirpath):
+            mm = ID32.search(f)
+            if not (mm and f.endswith(".md") and not f.startswith("_schema")):
+                continue
+            try:
+                if has_comments(open(os.path.join(dirpath, f)).read()):
+                    crows[mm.group(1)] = ""
+            except OSError:
+                continue
+    log(f"comment-row audit seeded: {len(crows)} rows")
+
+
+def phase_comment_audit_rows(api, users, state, report, args, discovered=None):
+    """The rolling per-block comment audit of the comment-bearing DB rows: every
+    row in the pool re-probed with a full comment read once per
+    NOTION_REFRESH_ROW_AUDIT_DAYS (default 4), longest-unaudited first. Rows
+    carry comments too (tasks, meetings, notes) and resolution on them is as
+    silent as on pages; this is the only place it is noticed."""
+    crows = state["comment_rows"]
+    if not crows:
+        seed_comment_rows(state)
+    row_to_db = {rid: db for db, rows in state["rows"].items() for rid in rows}
+    for rid in [r for r in crows if r not in row_to_db]:
+        crows.pop(rid)  # row deleted since it joined
+    days = _audit_days("NOTION_REFRESH_ROW_AUDIT_DAYS", 4)
+    due = sorted(crows, key=lambda r: (crows[r], r))[:audit_share(len(crows), days)]
+    dirs = db_dirs()
+    mds = {}
+    done = 0
+    for rid in due:
+        dirname = dirs.get(row_to_db[rid])
+        if not dirname:
+            continue
+        dirpath, title, idx = row_render_target(dirname, mds)
+        try:
+            page = api.get(f"/pages/{dashed(rid)}")
+            expand_truncated_props(api, page, title, report)
+            csvp = db_csv_path(dirpath)
+            cols = csv_cols(csvp)
+            if cols and not args.dry_run:
+                upsert_row_md(api, users, page, row_to_db[rid], title, cols, dirpath, "scan",
+                              state, report, args, md_idx=idx, discovered=discovered)
+                update_csv_row(csvp, cols, rid, page, users)
+            elif cols:
+                probe_row(api, users, page["id"], dirpath, report, discovered=discovered)
+            done += 1
+        except ApiError as e:
+            report["dbs"]["errors"].append({"db": title, "op": f"comment audit {rid[:8]}",
+                                            "error": str(e)[:160]})
+        crows[rid] = now_iso()
+    report["comments"].setdefault("audit", {}).update({
+        "rows_scanned": done, "rows_pool": len(crows), "row_cycle_days": days})
+    log(f"row comment audit: {done}/{len(due)} rows probed (pool {len(crows)}, {days:g}-day cycle)")
 
 
 def phase_full_comment_sweep(api, users, meta, state, report, args):
     """Manual (--mode full-comments): per-block rescan of every HUMAN content
     page in one run (~55k requests, ~12h — automation subtrees excluded; their
-    1.2M blocks are only ever cycled slowly by the daily shard). A clean,
+    1.2M blocks are out of scope for comments altogether). A clean,
     complete sweep rebuilds _comments.md wholesale (dropping the historical
     appendix) provided no automation-page sections would be lost."""
     page_index = index_workspace_pages()
@@ -3408,7 +3308,8 @@ def main():
     ap.add_argument("--mode", choices=["daily", "weekly", "monthly", "full-comments", "place",
                                        "validate", "rows", "contamination-check"],
                     default="daily",
-                    help="daily = everything incremental incl. rolling comment shard; "
+                    help="daily = everything incremental incl. the webhook fold and the "
+                         "rolling per-block comment audit; "
                          "full-comments = manual whole-human-corpus comment sweep (~55k req); "
                          "place = only retry _unplaced placement + regenerate structure.md; "
                          "rows = refresh only the rows named by --rows (plus a props-probe "
@@ -3417,9 +3318,6 @@ def main():
     ap.add_argument("--rows", default="", help="--mode rows: page ids, comma- or space-separated")
     ap.add_argument("--rps", type=float, default=3.0)  # Notion's ~3 req/s per-token cap
     ap.add_argument("--budget", type=int, default=0, help="max API requests (0 = mode default)")
-    ap.add_argument("--comment-budget", type=int,
-                    default=int(os.environ.get("NOTION_REFRESH_COMMENT_BUDGET", "4000")),
-                    help="requests per run for the rolling comment shard")
     ap.add_argument("--dbs", default="", help="only DBs whose dir name/id contains this")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--skip-dbs", action="store_true", help="skip the DB row sweep")
@@ -3486,7 +3384,6 @@ def main():
     dbflags = jload(os.path.join(STATE, "db-flags.json"), {})
     state = {
         "rows": {},  # loaded lazily below
-        "queue": jload(os.path.join(STATE, "probe-queue.json"), []),
         "db404": dbflags.get("db404", {}),
         "not_a_db": dbflags.get("not_a_db", {}),
         # written by coverage_backfill.py: databases whose data sources are not
@@ -3533,9 +3430,6 @@ def main():
             check_webhook_liveness(report)
             consume_db_events(state, report, discovered)
             run_phase("fold", fold_captures, users, state, report, args)
-            queue_budget = int(os.environ.get("NOTION_REFRESH_QUEUE_BUDGET", "0")) or max(1000, budget // 3)
-            run_phase("queue", phase_queue, api, users, state, report, args, max_req=queue_budget,
-                      discovered=discovered)
             if not args.skip_dbs:
                 run_phase("dbs", phase_dbs, api, users, state, report, args, discovered)
             # After the sweep, not before: entries queued before it are already
@@ -3556,12 +3450,11 @@ def main():
                 if args.mode == "full-comments":
                     run_phase("full-comments", phase_full_comment_sweep, api, users, meta, state, report, args)
                 else:
-                    shard_budget = max(0, min(args.comment_budget, budget - api.n))
-                    if shard_budget > 100:
-                        run_phase("comments", phase_comment_shard, api, users, meta, state, report,
-                                  args, shard_budget)
-                    else:
-                        report["notes"].append("comment shard skipped: request budget exhausted by earlier phases")
+                    run_phase("audit-pages", phase_comment_audit_pages, api, users, meta, state,
+                              report, args)
+            if args.mode != "full-comments" and not args.skip_dbs:
+                run_phase("audit-rows", phase_comment_audit_rows, api, users, state, report,
+                          args, discovered)
             # The coverage assert, last: it scans the corpus the run actually
             # leaves behind, inside refresh.py so the changelog analysis reads
             # its output from the staged diff rather than after the commit. It
@@ -3581,17 +3474,12 @@ def main():
         report["rate429"] = api.r429
         report["duration_s"] = int(time.time() - t0)
         users.save()
-        # above the mode branch: it writes to the report, not to disk, and a dry
-        # run reporting 0 deferred probes hides one of the things it exists to show
-        report["deferred"]["row_probes_queued"] = len(state["queue"])
         if args.mode == "rows":
-            # A rows run persists only what it actually changed. In particular it
-            # must not rewrite probe-queue.json or webhook-priority-pages.json:
-            # the receiver appends to both between our load and our save, and a
-            # wholesale rewrite from a stale in-memory copy is exactly the
-            # lost-update that props_probe's separate file exists to avoid.
+            # A rows run persists only what it actually changed: the rows it
+            # probed may have joined the audit pool or had their comments read.
             if not args.dry_run:
                 jsave(os.path.join(STATE, "comment-rows.json"), state["comment_rows"])
+                jsave(os.path.join(STATE, "comment-scan.json"), state["comment_scans"])
         elif not args.dry_run:
             known = set(db_dirs())
             left = sorted(t for t in discovered
@@ -3599,7 +3487,6 @@ def main():
             if left or os.path.exists(pending_disc):
                 jsave(pending_disc, left)
             jsave(rows_state_path, state["rows"])
-            jsave(os.path.join(STATE, "probe-queue.json"), state["queue"])
             jsave(os.path.join(STATE, "comment-scan.json"), state["comment_scans"])
             jsave(os.path.join(STATE, "retry-pages.json"), state["retry_pages"])
             jsave(os.path.join(STATE, "comment-rows.json"), state["comment_rows"])

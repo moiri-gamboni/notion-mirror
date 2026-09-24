@@ -186,7 +186,7 @@ def load_state():
     flags = refresh.jload(os.path.join(refresh.STATE, "db-flags.json"), {})
     return {
         "rows": refresh.jload(os.path.join(refresh.STATE, "rows-last-edited.json"), {}),
-        "queue": refresh.jload(os.path.join(refresh.STATE, "probe-queue.json"), []),
+        "comment_scans": refresh.jload(os.path.join(refresh.STATE, "comment-scan.json"), {}),
         "comment_rows": refresh.jload(os.path.join(refresh.STATE, "comment-rows.json"), {}),
         "db404": flags.get("db404", {}),
         "not_a_db": flags.get("not_a_db", {}),
@@ -201,7 +201,7 @@ def load_state():
 
 def save_state(state):
     refresh.jsave(os.path.join(refresh.STATE, "rows-last-edited.json"), state["rows"])
-    refresh.jsave(os.path.join(refresh.STATE, "probe-queue.json"), state["queue"])
+    refresh.jsave(os.path.join(refresh.STATE, "comment-scan.json"), state["comment_scans"])
     refresh.jsave(os.path.join(refresh.STATE, "comment-rows.json"), state["comment_rows"])
     refresh.jsave(os.path.join(refresh.STATE, "db-flags.json"),
                   {"db404": state["db404"], "not_a_db": state["not_a_db"],

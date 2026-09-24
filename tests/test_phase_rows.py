@@ -182,18 +182,6 @@ class ScopeTest(MirrorTestCase):
         self.assertEqual(self.report["rows"]["errors"][0]["row"], "f" * 32)
         self.assertEqual(self.probed, [self.A], "the run continues past a dead id")
 
-    def test_a_budget_wall_inside_the_probe_is_not_counted_as_refreshed(self):
-        # upsert_row_md absorbs a mid-probe Budget by queueing the row; a rows run
-        # discards that queue, so nothing would ever come back for it.
-        def budget_probe(*a, **kw):
-            raise refresh.Budget()
-        refresh.probe_row = budget_probe
-        self.run_rows(self.api, [self.A])
-        self.assertEqual(self.report["rows"]["refreshed"], [])
-        self.assertTrue(self.report["budget_exhausted"])
-        self.assertIn("budget", self.report["rows"]["errors"][0]["error"])
-        self.assertEqual(self.state_dict["queue"], [])
-
     def test_budget_exhaustion_stops_cleanly(self):
         api = FakeApi({rid: page(rid, self.DB_ID, f"Row {rid[0]}")
                        for rid in (self.A, self.B, self.C)}, budget=2)

@@ -20,9 +20,10 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import refresh  # noqa: E402  (_tools is not a package; discover's top dir is tests/)
 
-PHASES = ("check_webhook_liveness", "consume_db_events", "phase_queue", "phase_dbs",
+PHASES = ("check_webhook_liveness", "consume_db_events", "fold_captures", "phase_dbs",
           "drain_props_probe", "phase_content", "phase_schema_sweep", "phase_discovery",
-          "phase_comment_shard", "phase_full_comment_sweep", "phase_rows",
+          "phase_comment_audit_pages", "phase_comment_audit_rows",
+          "phase_full_comment_sweep", "phase_rows",
           "run_coverage_assert", "regenerate_structure_md", "build_comment_index")
 
 
@@ -67,9 +68,9 @@ class MainCase(unittest.TestCase):
         refresh.regenerate_structure_md = lambda: False
         refresh.run_coverage_assert = lambda *a, **kw: None
         refresh.build_comment_index = lambda: {}
-        for name in ("phase_queue", "phase_dbs", "drain_props_probe", "phase_schema_sweep",
-                     "phase_discovery", "phase_comment_shard", "phase_full_comment_sweep",
-                     "phase_rows"):
+        for name in ("fold_captures", "phase_dbs", "drain_props_probe", "phase_schema_sweep",
+                     "phase_discovery", "phase_comment_audit_pages", "phase_comment_audit_rows",
+                     "phase_full_comment_sweep", "phase_rows"):
             setattr(refresh, name, lambda *a, **kw: None)
         refresh.phase_content = lambda *a, **kw: {}
 
@@ -140,36 +141,14 @@ class EndpointReportTest(MainCase):
 class DryRunReportTest(MainCase):
     """A dry run writes nothing, so its report is the entire deliverable."""
 
-    def queue_two(self):
-        def queue(api, users, state, report, args, max_req=None, discovered=None):
-            state["queue"] += [{"kind": "row_probe", "db": "d" * 32, "row": "r" * 32},
-                               {"kind": "row_probe", "db": "d" * 32, "row": "s" * 32}]
-        refresh.phase_queue = queue
-
-    def test_a_dry_run_reports_the_probes_it_would_defer(self):
-        """The count sat inside the not-dry-run arm of the persistence branch, so
-        a dry run always reported 0 and report_md dropped its "Deferred to next
-        run" line — one of the things a dry run exists to show. It writes to the
-        report, not to disk, so it belongs above the branch."""
-        self.queue_two()
-        self.run_main("--mode", "daily", "--budget", "5", "--dry-run")
-        report = self.state_file("last-run-report.dry-run.json")
-        self.assertEqual(report["deferred"]["row_probes_queued"], 2)
-        self.assertIn("Deferred to next run: 2", self.report_md("last-run-report.dry-run.md"))
-
-    def test_a_real_run_still_reports_it(self):
-        self.queue_two()
-        self.run_main("--mode", "daily", "--budget", "5")
-        self.assertEqual(self.state_file("last-run-report.json")["deferred"]
-                         ["row_probes_queued"], 2)
-
-    def test_a_dry_run_still_writes_no_state(self):
-        """The reason the count was in there in the first place — moving it must
-        not move any of the writes with it."""
-        self.queue_two()
-        self.run_main("--mode", "daily", "--budget", "5", "--dry-run")
-        self.assertFalse(os.path.exists(os.path.join(self.state_dir, "probe-queue.json")))
-        self.assertFalse(os.path.exists(os.path.join(self.state_dir, "last-run.json")))
+    def test_a_dry_run_writes_no_state(self):
+        def audit(api, users, state, report, args, discovered=None):
+            state["comment_rows"]["r" * 32] = "2026-09-24T00:00:00.000Z"
+        refresh.phase_comment_audit_rows = audit
+        self.run_main("--mode", "daily", "--dry-run")
+        for name in ("comment-rows.json", "comment-scan.json", "last-run.json"):
+            self.assertFalse(os.path.exists(os.path.join(self.state_dir, name)), name)
+        self.assertTrue(os.path.exists(os.path.join(self.state_dir, "last-run-report.dry-run.json")))
 
     def test_a_dry_run_does_not_record_a_coverage_floor(self):
         """The coverage assert runs on a dry run — it reads the corpus, which a
@@ -202,30 +181,29 @@ class ContaminationScanPlacementTest(MainCase):
     raises UnicodeDecodeError (a ValueError), and `os.listdir` on a directory
     that vanished mid-run raises FileNotFoundError. Either one, raised from the
     top of the `finally`, discarded every state write and the run report with
-    them: the night's newly-queued probes, the new audit-pool members, and the
+    them: the night's comment-scan record, the new audit-pool members, and the
     content cursor, which then re-walks the whole content corpus next run.
     """
 
     def seed_state(self):
-        self.write_state("probe-queue.json", [{"kind": "row_probe", "db": "d" * 32,
-                                               "row": "r" * 32}])
+        self.write_state("comment-scan.json", {"r" * 32: "2026-09-01T00:00:00.000Z"})
         self.write_state("last-run.json", {"content_since": "OLD"})
 
-        def queue(api, users, state, report, args, max_req=None, discovered=None):
-            state["queue"].append({"kind": "row_probe", "db": "e" * 32, "row": "n" * 32})
+        def dbs(api, users, state, report, args, discovered):
+            state["comment_scans"]["n" * 32] = "2026-09-24T00:00:00.000Z"
             state["content_since"] = "NEW"
-        refresh.phase_queue = queue
+        refresh.phase_dbs = dbs
 
     def explode(self):
         def boom():
             raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
         refresh.build_comment_index = boom
 
-    def test_a_raising_scan_does_not_discard_the_queued_probes(self):
+    def test_a_raising_scan_does_not_discard_the_comment_scan_record(self):
         self.seed_state()
         self.explode()
         self.run_main("--mode", "daily", "--budget", "5")
-        self.assertEqual(len(self.state_file("probe-queue.json")), 2)
+        self.assertEqual(len(self.state_file("comment-scan.json")), 2)
 
     def test_a_raising_scan_does_not_rewind_the_content_cursor(self):
         self.seed_state()

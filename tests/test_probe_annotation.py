@@ -160,18 +160,6 @@ class TestFailedProbe(AnnotationBase):
         self.stub_probe(raises=refresh.ApiError(500, "boom"))
         self.assertEqual(self.annotations(self.run_upsert()), [today()])
 
-    def test_budget_defers_the_row_without_annotating_it(self):
-        # A budget wall stops every remaining row at once and each one is queued
-        # for the next run; annotating would rewrite thousands of files and
-        # unwrite them tomorrow.
-        self.seed(BODY_AND_COMMENTS)
-        self.stub_probe(raises=refresh.Budget())
-        txt = self.run_upsert()
-        self.assertNotIn("probe failed", txt)
-        self.assertEqual(self.state["queue"],
-                         [{"kind": "row_probe", "db": self.DB_ID, "row": self.RID}])
-        self.assertEqual(self.report["dbs"]["probe_annotated"], [])
-
     def test_unprobed_row_keeps_its_existing_annotation(self):
         # probe=False conflates three callers — the enriched-only policy skip, a
         # property-only change, and first sight during state seeding — so it can

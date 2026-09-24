@@ -9,13 +9,13 @@ deployment puts in front of it. Three jobs:
    and ntfy it so the human can complete verification in the integration UI.
 2. Event intake: validate X-Notion-Signature (HMAC-SHA256 of the raw body with
    the verification token), append the event to _meta/state/webhook-events.jsonl,
-   and queue the entity for capture.
+   and route database lifecycle and property events to their queues.
 3. Capture thread: within ~a minute of a comment event, fetch the comment
    thread's content via the REST API (comments are capture-before-resolve: the
    API only returns open comments, so fetching promptly is what makes later
    resolution non-destructive) and append it, with its block anchor text and
    containing page, to _meta/state/webhook-comments-capture.jsonl. The daily
-   refresh merges captures into the mirror and prioritizes event pages.
+   refresh folds captures into the mirror without re-reading the page.
 
 Stateless besides the _meta/state files; safe to restart any time. Events are
 at-most-once from Notion's side — the daily sweep remains the reconciliation
@@ -54,7 +54,6 @@ STATE = paths.STATE
 TOKEN_FILE = os.path.join(STATE, paths.WEBHOOK_SECRET)
 EVENTS = os.path.join(STATE, "webhook-events.jsonl")
 CAPTURE = os.path.join(STATE, paths.CAPTURE)
-PRIORITY = os.path.join(STATE, "webhook-priority-pages.json")
 # Never probe-queue.json: refresh.py rewrites that file wholesale from memory at
 # end of run, so anything appended here during a multi-hour nightly would be
 # erased. A separate file makes that structurally impossible.
@@ -89,20 +88,17 @@ NTFY_COOLDOWN_S = 3600
 _ntfy_last = {}
 _ntfy_suppressed = {}
 
-# page.* events that warrant a body+comment re-walk of the page. Deliberately
-# excludes page.properties_updated: its payload carries data.updated_properties
-# (property ids only, no values), i.e. Notion stating the body did NOT change.
-# It is also 77% of all events — marking those pages priority made the probe
-# queue 68% no-op work and cost 70% of the 07-31 request budget.
-PRIORITY_PAGE_EVENTS = ("page.content_updated", "page.created",
-                        "page.moved", "page.deleted")
-
-# ... and that event class comes back here instead, on its own queue and its own
-# probe kind: one GET, re-render the property table and the CSV line, never the
-# body. The disaster was never the event volume, it was routing those events to
-# the full body-and-comments probe. At ~1 request per changed page the event is
-# affordable, and property changes reach the mirror in about an hour rather than
-# about a day.
+# page.content_updated / created / moved / deleted are logged and nothing more:
+# each moves the page's last_edited_time, which the nightly's per-database row
+# query and full page search already diff, so the same night re-walks the page
+# either way. (They used to mark the page for a priority probe, which the row
+# sweep then repeated, since the probe never recorded the new timestamp.)
+#
+# page.properties_updated goes to its own queue and probe kind: one GET,
+# re-render the property table and the CSV line, never the body. Its payload
+# carries property ids only (Notion stating the body did NOT change), and it is
+# 77% of all events; at ~1 request per changed page it is affordable, and
+# property changes reach the mirror in about an hour rather than about a day.
 PROPS_PROBE_EVENTS = ("page.properties_updated",)
 
 
@@ -186,18 +182,6 @@ def jappend(path, obj):
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
-def add_priority_page(pid):
-    with _lock:
-        try:
-            cur = set(json.load(open(PRIORITY)))
-        except (OSError, json.JSONDecodeError):
-            cur = set()
-        cur.add(pid.replace("-", ""))
-        with open(PRIORITY + ".tmp", "w") as f:
-            json.dump(sorted(cur), f)
-        os.replace(PRIORITY + ".tmp", PRIORITY)
-
-
 def add_props_probe(pid):
     """Queue a property-only probe, deduped by page id.
 
@@ -225,14 +209,11 @@ def route_event(etype, ent, data):
     """Non-comment events -> the queue that will act on them.
 
     Comment events are absent on purpose: they are consumed durably from the
-    events log by capture_loop, which marks their page priority itself once the
-    thread is captured."""
+    events log by capture_loop."""
     if not ent.get("id"):
         return
     if etype.startswith(("database.", "data_source.")):
         record_db_event(ent["id"], etype, (data or {}).get("parent"))
-    elif etype in PRIORITY_PAGE_EVENTS:
-        add_priority_page(ent["id"])
     elif etype in PROPS_PROBE_EVENTS:
         # Only rows: a props probe re-renders a property table and a CSV line,
         # and a page that is not a database row has neither. Three of the first
@@ -313,7 +294,6 @@ def capture_entity(entity_id, entity_type, page_hint=""):
                       "entity_id": entity_id.replace("-", ""), "entity_type": entity_type,
                       "page_id": str(page_id).replace("-", ""), "anchor": anchor,
                       "comments": comments})
-    add_priority_page(str(page_id))
     log(f"captured {len(comments)} comment(s) on {entity_type} {entity_id[:8]} (page {str(page_id)[:8]})")
 
 
