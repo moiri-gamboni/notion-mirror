@@ -33,6 +33,8 @@ NOTION_MIRROR=/path/to/mirror
 0 8 * * * user /path/to/notion-mirror/refresh.sh notify >> ~/.local/state/notion-mirror.log 2>&1
 ```
 
+Cron fires in the machine's timezone. For a local start hour that follows daylight saving on a UTC machine, run the same command (outer `flock`, `NOTION_REFRESH_DEFER_NTFY=1` and the log redirection included) from a systemd timer with `OnCalendar=*-*-* 01:00:00 Area/City`; `systemd-analyze calendar` shows when it next fires.
+
 Do not hold `~/.locks/notion-mirror-internal` around the invocation: that is the script's own file, `flock` conflicts on the inode, and a parent holding it makes the script report "a mirror run is in progress" about itself.
 
 ### How to run the webhook receiver
