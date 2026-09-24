@@ -332,9 +332,7 @@ the replacement note.")"
         < /dev/null > "$NOTE.tmp" 2>>"${TMPDIR:-/tmp}/notion-mirror-claude.err" \
         && [ -s "$NOTE.tmp" ] && head -5 "$NOTE.tmp" | grep -q "^#"; then
         mv "$NOTE.tmp" "$NOTE"
-        git add -- "$NOTE" && git commit -q -m "notion changelog: reanalyzed $DATE_UTC refresh ($SHA)
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+        git add -- "$NOTE" && git commit -q -m "notion changelog: reanalyzed $DATE_UTC refresh ($SHA)"
         send_note_ntfy "$NOTE" "$SUMMARY" "$REL"
         # The run that wrote the stub may have deferred its digest. That queued
         # entry points at the note just replaced and just sent, so leaving it
@@ -416,9 +414,7 @@ EOF
         # nightly this sweeps partial writes into an hourly commit, which makes
         # NOTION_REFRESH_RESUME=1 moot.
         git add -A >/dev/null || guard_out failed git_add_failed "git add failed"
-        git commit -q -m "notion refresh (rows): $ROWS_SUMMARY
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>" || guard_out failed git_commit_failed "git commit failed"
+        git commit -q -m "notion refresh (rows): $ROWS_SUMMARY" || guard_out failed git_commit_failed "git commit failed"
         say "committed: $ROWS_SUMMARY"
     else
         say "rows refresh: no changes ($ROWS_SUMMARY)"
@@ -437,9 +433,7 @@ if [ "$CHANGES" != "1" ]; then
     if [ -n "$(git status --porcelain)" ]; then
         say "no content changes reported, but tree dirty (state/format touch-ups) — committing quietly"
         git add -A >/dev/null
-        git commit -q -m "notion refresh ($MODE): housekeeping, no content changes
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>" || true
+        git commit -q -m "notion refresh ($MODE): housekeeping, no content changes" || true
     fi
     say "no changes — done"
     exit 0
@@ -535,9 +529,7 @@ EOF
 git add -A >/dev/null
 git commit -q -m "notion refresh ($MODE): $DATE_UTC — $SUMMARY
 
-Automated mirror refresh; changelog note at $REL.
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>" || fail "git commit failed"
+Automated mirror refresh; changelog note at $REL." || fail "git commit failed"
 say "committed: $SUMMARY"
 if [ "${NOTION_REFRESH_PUSH:-0}" = "1" ]; then
     if git push >/dev/null 2>&1; then
