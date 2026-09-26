@@ -566,10 +566,42 @@ def db_probe_policy(dirpath, nrows, state, db_id):
     return mode
 
 
+def load_source_catalog(api, report):
+    """Every shared data source, by database id32, from one data-source search:
+    `api.catalog` for the rest of the run. A search result is the whole object
+    `GET /data_sources/{id}` returns, so a database the catalog lists with one
+    source needs no read of its own for its source id (`query_db_rows`), its
+    schema (`get_database`) or its discovery (`phase_discovery`). A failed
+    search leaves no catalog, and every database is read directly."""
+    cat = {}
+    try:
+        for r in api.paginate("POST", "/search", body={
+                "filter": {"value": "data_source", "property": "object"},
+                "sort": {"timestamp": "last_edited_time", "direction": "descending"},
+                "page_size": 100}):
+            did = undash(((r.get("parent") or {}).get("database_id")) or r["id"])
+            cat.setdefault(did, []).append(r)
+    except ApiError as e:
+        api.catalog = None
+        report["notes"].append(f"data-source search failed, every database read directly: {e}"[:200])
+        return
+    api.catalog = cat
+
+
+def catalog_source(api, db_id):
+    """The one data source the run's catalog lists for a database, or None: no
+    catalog, not listed, or more than one source (those are read directly, so a
+    multi-source database's container title and source order stay authoritative)."""
+    cat = getattr(api, "catalog", None)
+    srcs = cat.get(undash(db_id)) if isinstance(cat, dict) else None
+    return srcs[0] if srcs and len(srcs) == 1 else None
+
+
 def query_db_rows(api, db_id):
     """All rows of a DB: every data source it holds, queried in turn (at
     2025-09-03 and later a database is a container and rows live in its data
-    sources; `GET /databases/{id}` lists them).
+    sources; `GET /databases/{id}` lists them, unless the run's catalog already
+    names the one source).
 
     Complete past Notion's 10,000-results-per-query cap: `Api.query_rows` windows
     by created_time, so a big DB's overflow rows can no longer be mistaken for
@@ -583,8 +615,12 @@ def query_db_rows(api, db_id):
     child's data source; `as_database` puts one back under its database's id,
     as 2022-06-28 listed it, so its row file keeps its name and its body read
     does not 404 on a data-source id."""
-    d = api.get(f"/databases/{dashed(db_id)}")
-    srcs = [s for s in d.get("data_sources") or [] if isinstance(s, dict) and s.get("id")]
+    src = catalog_source(api, db_id)
+    if src:
+        d, srcs = None, [{"id": src["id"]}]
+    else:
+        d = api.get(f"/databases/{dashed(db_id)}")
+        srcs = [s for s in d.get("data_sources") or [] if isinstance(s, dict) and s.get("id")]
     if not srcs:
         # the report line this lands in is itself truncated at 200 chars
         raise Truncated(f"/databases/{db_id}: the database lists no data source to query")
@@ -674,7 +710,12 @@ def get_database(api, db_id):
     2022-06-28 served. A multi-source database's is the container, with every
     source's properties merged in source order under `properties` (first source
     wins a shared name), which is what the row query's merged rows and the CSV
-    columns need; `schema_md` names its sources."""
+    columns need; `schema_md` names its sources. A single source the run's
+    catalog lists costs no request: the search returned the same object."""
+    src = catalog_source(api, db_id)
+    if src:
+        return (as_database(src, dashed(db_id), src.get("database_parent")),
+                [{"id": src["id"], "name": plain(src.get("title"))}])
     d = api.get(f"/databases/{dashed(db_id)}")
     sources = [s for s in d.get("data_sources") or [] if isinstance(s, dict) and s.get("id")]
     if not sources:
@@ -3307,14 +3348,19 @@ def phase_discovery(api, users, state, report, args, discovered):
             continue
         capture_new_db(api, users, did, state, report, args)
         known.add(did)
-    # search-visible new databases
+    # search-visible new databases: the run's catalog when there is one
+    cat = getattr(api, "catalog", None)
     try:
-        for r in api.paginate("POST", "/search", body={
-                "filter": {"value": "data_source", "property": "object"},
-                "sort": {"timestamp": "last_edited_time", "direction": "descending"},
-                "page_size": 100}):
+        if isinstance(cat, dict):
+            found = list(cat)
+        else:
             # a result is a data source; the mirror is keyed by its database
-            did = undash(((r.get("parent") or {}).get("database_id")) or r["id"])
+            found = (undash(((r.get("parent") or {}).get("database_id")) or r["id"])
+                     for r in api.paginate("POST", "/search", body={
+                         "filter": {"value": "data_source", "property": "object"},
+                         "sort": {"timestamp": "last_edited_time", "direction": "descending"},
+                         "page_size": 100}))
+        for did in found:
             if not skip_discovery(did, known, state):
                 capture_new_db(api, users, did, state, report, args)
                 known.add(did)
@@ -3326,9 +3372,8 @@ def phase_schema_sweep(api, users, state, report, args):
     """Every run: refresh every _schema.json/_schema.md (+ row/prop counts).
     Detects DB renames and cascades them (dir, csv, row-md headers).
 
-    One GET per database, so the phase costs as many requests as the mirror has
-    databases — 750 of the 2026-09-22 run's 11,229 — which is the cost any
-    second per-database fetch here would have to justify."""
+    A database the run's catalog lists with one source costs nothing here
+    (`get_database`); any other costs a GET of the database and one per source."""
     for db_id, dirname in sorted(db_dirs().items(), key=lambda kv: kv[1].lower()):
         dirpath = os.path.join(DBS, dirname)
         schema = jload(os.path.join(dirpath, "_schema.json"), {})
@@ -3743,6 +3788,7 @@ def main():
             check_webhook_liveness(report)
             consume_db_events(state, report, discovered)
             run_phase("fold", fold_captures, users, state, report, args)
+            run_phase("catalog", load_source_catalog, api, report)
             if not args.skip_dbs:
                 run_phase("dbs", phase_dbs, api, users, state, report, args, discovered)
             # After the sweep, not before: entries queued before it are already

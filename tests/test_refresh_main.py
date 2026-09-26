@@ -20,7 +20,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import refresh  # noqa: E402  (_tools is not a package; discover's top dir is tests/)
 
-PHASES = ("check_webhook_liveness", "consume_db_events", "fold_captures", "phase_dbs",
+PHASES = ("check_webhook_liveness", "consume_db_events", "fold_captures", "load_source_catalog", "phase_dbs",
           "drain_props_probe", "phase_content", "phase_schema_sweep", "phase_discovery",
           "phase_comment_audit_pages", "phase_comment_audit_rows",
           "phase_full_comment_sweep", "phase_rows",
@@ -68,7 +68,7 @@ class MainCase(unittest.TestCase):
         refresh.regenerate_structure_md = lambda: False
         refresh.run_coverage_assert = lambda *a, **kw: None
         refresh.build_comment_index = lambda: {}
-        for name in ("fold_captures", "phase_dbs", "drain_props_probe", "phase_schema_sweep",
+        for name in ("fold_captures", "load_source_catalog", "phase_dbs", "drain_props_probe", "phase_schema_sweep",
                      "phase_discovery", "phase_comment_audit_pages", "phase_comment_audit_rows",
                      "phase_full_comment_sweep", "phase_rows"):
             setattr(refresh, name, lambda *a, **kw: None)
