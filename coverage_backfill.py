@@ -374,7 +374,7 @@ def capture_database(ctx, db_id):
     the database as *present* while its rows are still missing, which is exactly
     the hole being filled here being frozen into the definition of expected."""
     try:
-        d, _sources = refresh.get_database(ctx.api, db_id)
+        d, sources = refresh.get_database(ctx.api, db_id)
     except refresh.ApiError as e:
         if e.code in (403, 404):
             reason, note = classify_refusal(ctx, db_id, "child_database", e)
@@ -418,7 +418,7 @@ def capture_database(ctx, db_id):
     try:
         refresh.jsave(os.path.join(tmp, "_schema.json"),
                       {"id": db_id, "title": title, "database": d,
-                       "data_sources": refresh.data_source_stubs(None, fresh=d.get("data_sources"))})
+                       "data_sources": refresh.data_source_stubs(None, fresh=sources)})
         # a throwaway `discovered` set, as capture_new_db passes: what this run
         # follows is what the written artifacts reference, not relation targets
         refresh.refresh_db(ctx.api, ctx.users, db_id, tmpname, ctx.state,
@@ -427,12 +427,12 @@ def capture_database(ctx, db_id):
         if csv_path is None:
             raise RuntimeError("no CSV written — the row query failed; see report errors")
         with open(os.path.join(tmp, "_schema.md"), "w") as f:
-            f.write(refresh.schema_md(title, db_id, nrows, props))
+            f.write(refresh.schema_md(title, db_id, nrows, props, sources))
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     os.rename(tmp, final)
-    refresh.update_all_schemas(title, db_id, nrows, props)
+    refresh.update_all_schemas(title, db_id, nrows, props, sources)
 
     return seed_have(ctx, db_id, final, sorted(os.listdir(final)))
 

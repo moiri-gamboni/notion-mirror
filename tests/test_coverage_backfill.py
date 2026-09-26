@@ -115,8 +115,10 @@ class FakeApi:
                 raise refresh.ApiError(self.refuse[i], "refused")
             if i not in self.dbs:
                 raise refresh.ApiError(404, "no such data source")
-            return {"object": "data_source",
-                    "properties": json.loads(json.dumps(self.dbs[i].get("properties") or {}))}
+            # the collection itself: the stored database payload, as a data source
+            d = json.loads(json.dumps(self.dbs[i]))
+            return dict(d, object="data_source", database_parent=d.get("parent"),
+                        parent={"type": "database_id", "database_id": refresh.dashed(i)})
         if path.startswith("/pages/"):
             i = self._id(path, "/pages/")
             if i in self.refuse:

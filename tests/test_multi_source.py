@@ -1,12 +1,8 @@
 """A database with more than one data source is mirrored, not refused.
 
-At Notion-Version 2022-06-28, which the engine reads databases with, such a
-database answers `GET /databases/{id}` with 400 "Databases with multiple data
-sources are not supported in this API version", so its schema files were never
-refreshed and a new one would have been flagged not-a-database. Its rows already
-came through the 2025-09-03 data-source query. Now its schema comes from the
-2025-09-03 database object and each source's `GET /data_sources/{id}`, merged,
-and a single-source database costs and writes exactly what it did.
+Its schema block is the database container with each source's
+`GET /data_sources/{id}` properties merged, and `_schema.md` names the sources;
+a single-source database's block is its one data source and names none.
 
 Separately: a database whose object answers but whose rows 404 (its data source
 is not shared with the integration) was captured as new and deleted again after
@@ -47,7 +43,8 @@ class MultiApi:
             return {"object": "database", "id": refresh.dashed(DB_ID),
                     "title": [{"plain_text": "Publications"}], "request_id": "r", "data_sources": srcs}
         if path == f"/data_sources/{DS1}":
-            return {"object": "data_source", "properties": dict(prop("Name", "title"), **prop("URL", "url"))}
+            return {"object": "data_source", "title": [{"plain_text": "Publications"}],
+                    "properties": dict(prop("Name", "title"), **prop("URL", "url"))}
         if path == f"/data_sources/{DS2}":
             return {"object": "data_source", "properties": dict(prop("Name", "title"), **prop("Status", "select"))}
         raise AssertionError(f"unexpected GET {path}")
@@ -74,10 +71,10 @@ class MultiSource(unittest.TestCase):
     def test_a_single_source_database_has_no_sources_line(self):
         api = MultiApi(multi=False)
         d, sources = refresh.get_database(api, DB_ID)
-        self.assertIsNone(sources)
+        self.assertEqual(sources, [{"id": DS1, "name": "Publications"}])
         self.assertEqual([p for p, _v in api.calls],
                          [f"/databases/{refresh.dashed(DB_ID)}", f"/data_sources/{DS1}"])
-        self.assertNotIn("Data sources", refresh.schema_md("P", DB_ID, 1, d["properties"]))
+        self.assertNotIn("Data sources", refresh.schema_md("P", DB_ID, 1, d["properties"], sources))
 
     def test_a_multi_source_schema_merges_every_source(self):
         props, title = refresh.refresh_schema_files(MultiApi(), self.dirpath, DB_ID, "Publications",

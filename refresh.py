@@ -577,7 +577,12 @@ def query_db_rows(api, db_id):
     Aug 2026). An unwindowable truncation raises Truncated instead of returning
     a short set, and so does a multi-source database that lists no data source
     to query: the empty row set that produced would diff every live row of it
-    as deleted, which is the same failure by a different road."""
+    as deleted, which is the same failure by a different road.
+
+    A wiki database lists its child databases among its rows, each as the
+    child's data source; `as_database` puts one back under its database's id,
+    as 2022-06-28 listed it, so its row file keeps its name and its body read
+    does not 404 on a data-source id."""
     d = api.get(f"/databases/{dashed(db_id)}")
     srcs = [s for s in d.get("data_sources") or [] if isinstance(s, dict) and s.get("id")]
     if not srcs:
@@ -585,14 +590,18 @@ def query_db_rows(api, db_id):
         raise Truncated(f"/databases/{db_id}: the database lists no data source to query")
     rows = []
     for s in srcs:
-        rows.extend(api.query_rows(f"/data_sources/{s['id']}/query"))
+        for r in api.query_rows(f"/data_sources/{s['id']}/query"):
+            if r.get("object") == "data_source":
+                r = as_database(r, (r.get("parent") or {}).get("database_id") or r["id"],
+                                r.get("database_parent"))
+            rows.append(r)
     return rows, {"data_sources": srcs, "database": d}
 
 
 def schema_md(title, db_id, nrows, props, sources=None):
     lines = [f"# Schema — {title}", "",
              f"`db {db_id}` · {nrows} rows · {len(props)} properties", ""]
-    if sources:
+    if sources and len(sources) > 1:
         # only a multi-source database carries this line; its properties below
         # are every source's, merged in source order
         lines += ["Data sources: " + ", ".join(f"{s.get('name') or 'untitled'} `{undash(s['id'])}`"
@@ -623,13 +632,9 @@ def schema_md(title, db_id, nrows, props, sources=None):
 def data_source_stubs(stored, fresh=None):
     """A database's data sources, by id and nothing else.
 
-    Schemas do not belong here. `refresh_schema_files` fetches databases at
-    2022-06-28, whose response carries no `data_sources` at all (the field
-    arrived with 2025-09-03), so nothing in this block can be refreshed from
-    that call — whatever it holds is carried across runs. A carried *id* is
-    safe: it is fixed for the life of the data source, and it is what the block
-    is read for, since the 2025-09-03 endpoints address rows by data source.
-    A carried *schema* is not. The blocks written before this engine existed
+    Schemas do not belong here. An *id* is safe to carry: it is fixed for the
+    life of the data source, and it is what the block is read for, since rows
+    are addressed by data source. A *schema* is not. The blocks written before this engine existed
     held whole `GET /v1/data_sources/{id}` responses, properties included, and
     `old.get("data_sources") or …` kept them: measured 2026-09-22, 100 of the
     401 blocks no longer matched the `database.properties` sitting beside them
@@ -649,31 +654,42 @@ def data_source_stubs(stored, fresh=None):
             if isinstance(s, dict) and s.get("id")]
 
 
-def get_database(api, db_id):
-    """A database's schema -> (database object, its data sources or None).
+def as_database(ds, db_id, parent):
+    """A data source object under its database's id and parent: the shape of a
+    2022-06-28 database object, field for field and in the same order, but for
+    `archived` (removed by 2026-03-11; `in_trash` carries it)."""
+    v = {k: val for k, val in ds.items() if k not in ("database_parent", "request_id")}
+    v.update(object="database", id=db_id, parent=parent)
+    return v
 
-    At Notion-Version 2022-06-28, which every other read here uses, a database's
-    properties are its single data source's; a database with more than one
-    source refuses outright (400 "Databases with multiple data sources are not
-    supported in this API version"). For that one the 2025-09-03 database
-    object is fetched instead, each source's schema read from
-    `/data_sources/{id}`, and their properties merged in source order under
-    `properties` (first source wins a shared name), which is what the row
-    query's merged rows and the CSV columns need. The sources come back as the
-    second value; a single-source database returns None and its output is
-    unchanged."""
+
+def get_database(api, db_id):
+    """A database's schema -> (database block, its live data sources).
+
+    `GET /databases/{id}` is the container: it lists the data sources, and its
+    title, icon and description are the container's own, not the collection's
+    the mirror has always shown — a blank title reads "New database", and a
+    database mention reads as a page mention "Untitled". A single-source
+    database's block is therefore its data source, via `as_database`: the block
+    2022-06-28 served. A multi-source database's is the container, with every
+    source's properties merged in source order under `properties` (first source
+    wins a shared name), which is what the row query's merged rows and the CSV
+    columns need; `schema_md` names its sources."""
     d = api.get(f"/databases/{dashed(db_id)}")
     sources = [s for s in d.get("data_sources") or [] if isinstance(s, dict) and s.get("id")]
     if not sources:
         # an empty schema would blank the schema files; keep the stored one
         raise Truncated(f"/databases/{db_id}: the database lists no data source")
+    if len(sources) == 1:
+        ds = api.get(f"/data_sources/{sources[0]['id']}")
+        return as_database(ds, d.get("id") or dashed(db_id), ds.get("database_parent") or d.get("parent")), sources
     props = {}
     for s in sources:
         ds = api.get(f"/data_sources/{s['id']}")
         for name, spec in (ds.get("properties") or {}).items():
             props.setdefault(name, spec)
     d["properties"] = props
-    return d, (sources if len(sources) > 1 else None)
+    return d, sources
 
 
 def refresh_schema_files(api, dirpath, db_id, title, nrows, report, force=False,
@@ -697,7 +713,7 @@ def refresh_schema_files(api, dirpath, db_id, title, nrows, report, force=False,
     # round, so the recorded value won and the response's was never reached.
     new = {"id": db_id, "title": live_title, "database": d,
            "data_sources": data_source_stubs(old.get("data_sources"),
-                                             data_sources or sources or d.get("data_sources"))}
+                                             data_sources or sources)}
     oldn = dict(old.get("database") or {})
     oldn.pop("request_id", None)
     # data_sources is in the predicate, not just in `new`: without it a corrected
@@ -1023,9 +1039,7 @@ def capture_new_db(api, users, db_id, state, report, args):
     os.makedirs(dirpath, exist_ok=True)
     jsave(os.path.join(dirpath, "_schema.json"),
           {"id": db_id, "title": title, "database": d,
-           # empty at 2022-06-28, which carries no data_sources: a new database's
-           # ids arrive the first time a caller with a live list refreshes it
-           "data_sources": data_source_stubs(None, fresh=sources or d.get("data_sources"))})
+           "data_sources": data_source_stubs(None, fresh=sources)})
     props = d.get("properties") or {}
     with open(os.path.join(dirpath, "_schema.md"), "w") as f:
         f.write(schema_md(title, db_id, len(rows), props, sources))

@@ -112,8 +112,10 @@ class FakeNotion:
         if path.startswith("/data_sources/"):
             did = refresh.undash(path.split("/data_sources/", 1)[1])
             if did in self.dbs:
-                return {"object": "data_source",
-                        "properties": dict(self.dbs[did][0].get("properties") or {})}
+                # the collection itself: the stored database payload, as a data source
+                d = dict(self.dbs[did][0])
+                return dict(d, object="data_source", database_parent=d.get("parent"),
+                            parent={"type": "database_id", "database_id": refresh.dashed(did)})
             raise refresh.ApiError(404, "not found")
         raise AssertionError(f"unexpected GET {path}")
 
