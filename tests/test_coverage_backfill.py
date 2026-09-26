@@ -100,12 +100,23 @@ class FakeApi:
         if self.on_get:
             self.on_get(path)
         if path.startswith("/databases/"):
+            # 2026-03-11: the database lists its one data source (here, same id)
             i = self._id(path, "/databases/")
             if i in self.refuse:
                 raise refresh.ApiError(self.refuse[i], "refused")
             if i not in self.dbs:
                 raise refresh.ApiError(404, "no such database")
-            return json.loads(json.dumps(self.dbs[i]))
+            d = json.loads(json.dumps(self.dbs[i]))
+            d.setdefault("data_sources", [{"id": refresh.dashed(i), "name": "src"}])
+            return d
+        if path.startswith("/data_sources/"):
+            i = self._id(path, "/data_sources/")
+            if i in self.refuse:
+                raise refresh.ApiError(self.refuse[i], "refused")
+            if i not in self.dbs:
+                raise refresh.ApiError(404, "no such data source")
+            return {"object": "data_source",
+                    "properties": json.loads(json.dumps(self.dbs[i].get("properties") or {}))}
         if path.startswith("/pages/"):
             i = self._id(path, "/pages/")
             if i in self.refuse:
@@ -131,8 +142,8 @@ class FakeApi:
 
     def paginate(self, method, path, body=None, params=None, ver=None):
         self._spend(path)
-        if path.startswith("/databases/") and path.endswith("/query"):
-            i = self._id(path, "/databases/", "/query")
+        if path.startswith(("/databases/", "/data_sources/")) and path.endswith("/query"):
+            i = self._id(path, "/" + path.split("/")[1] + "/", "/query")
             if i in self.refuse or i in self.refuse_query:
                 raise refresh.ApiError(self.refuse.get(i) or self.refuse_query[i], "refused")
             return list(self.rows.get(i, []))
@@ -715,8 +726,9 @@ class BudgetStop(BackfillCase):
 
     def test_budget_stop_keeps_the_remainder(self):
         self.write_census([(DB_A, "child_database", "Alpha"), (DB_B, "child_database", "Beta")])
-        # enough for Alpha (schema + query + row body + row comments), not for Beta
-        api = self.api_two_dbs(budget=6)
+        # enough for Alpha (database + source schema, database + query, row body,
+        # row comments), not for Beta
+        api = self.api_two_dbs(budget=8)
         progress, tally = self.run_backfill(api)
         self.assertEqual("budget", tally["stopped"])
         self.assertIn(DB_A, progress["done"])

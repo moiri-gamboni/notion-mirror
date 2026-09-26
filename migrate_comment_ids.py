@@ -445,7 +445,7 @@ def main(argv=None):
         if not token:
             print("NOTION_TOKEN not set", file=sys.stderr)
             return 2
-        api = refresh.Api(token, args.rps, args.budget)
+        api = refresh.Api(token, args.rps, args.budget, version=refresh.VER_LATEST)
         users = refresh.Users(api)
 
         def refetch(rid, src, _api=api, _users=users):

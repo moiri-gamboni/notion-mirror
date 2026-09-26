@@ -102,15 +102,24 @@ class FakeNotion:
             return {"object": "comment", "id": refresh.dashed(cid),
                     "parent": {"type": kind, kind: refresh.dashed(pid)}}
         if path.startswith("/databases/"):
+            # 2026-03-11: a database lists its data sources (one, same id, here)
             did = refresh.undash(path.split("/databases/", 1)[1])
             if did in self.dbs:
-                return dict(self.dbs[did][0])
+                d = {k: v for k, v in self.dbs[did][0].items() if k != "properties"}
+                d.setdefault("data_sources", [{"id": refresh.dashed(did), "name": "src"}])
+                return d
+            raise refresh.ApiError(404, "not found")
+        if path.startswith("/data_sources/"):
+            did = refresh.undash(path.split("/data_sources/", 1)[1])
+            if did in self.dbs:
+                return {"object": "data_source",
+                        "properties": dict(self.dbs[did][0].get("properties") or {})}
             raise refresh.ApiError(404, "not found")
         raise AssertionError(f"unexpected GET {path}")
 
     def query_rows(self, path, body=None, ver=None):
         self._count("POST", path)
-        did = refresh.undash(path.split("/databases/", 1)[1].split("/", 1)[0])
+        did = refresh.undash(path.split("/", 2)[2].split("/", 1)[0])
         if did not in self.dbs:
             raise refresh.ApiError(404, "not found")
         return list(self.dbs[did][1])

@@ -154,7 +154,7 @@ class RefreshDbTruncatedTest(MirrorTestCase):
 
         fake = types.SimpleNamespace(
             query_rows=mock.Mock(side_effect=api_mod.Truncated("capped, unwindowable")),
-            get=mock.Mock(side_effect=AssertionError("no fallback expected")),
+            get=mock.Mock(return_value={"object": "database", "data_sources": [{"id": "ds"}]}),
             n=0)
         self._refresh(fake)
 
@@ -179,6 +179,8 @@ class RefreshDbTruncatedTest(MirrorTestCase):
             pages.append(p)
         srv = Server(pages)
         api = client(srv)
+        api.get = lambda path, params=None, ver=None: {"object": "database",
+                                                        "data_sources": [{"id": "ds"}]}
         self._refresh(api)
 
         self.assertEqual(self.report["dbs"].get("errors", []), [])
@@ -204,8 +206,7 @@ class EmptyDataSourceListTest(MirrorTestCase):
             self.seed_row(r, title=f"Row {i}")
 
         fake = types.SimpleNamespace(
-            query_rows=mock.Mock(side_effect=api_mod.ApiError(
-                400, "Your integration must specify a data source to query")),
+            query_rows=mock.Mock(side_effect=AssertionError("nothing to query")),
             get=mock.Mock(return_value={"object": "database", "data_sources": []}),
             n=0)
         self.state_dict.setdefault("db404", {})
@@ -218,7 +219,7 @@ class EmptyDataSourceListTest(MirrorTestCase):
             self.assertTrue(os.path.exists(os.path.join(self.dirpath, f"Row {i} {r}.md")),
                             f"row {r} was tombstoned on an empty data-source list")
         errors = self.report["dbs"]["errors"]
-        self.assertTrue(any("listed no data source" in e["error"] for e in errors), errors)
+        self.assertTrue(any("lists no data source" in e["error"] for e in errors), errors)
         self.assertTrue(any("nothing diffed as deleted" in e["error"] for e in errors), errors)
 
 

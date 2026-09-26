@@ -59,7 +59,7 @@ CAPTURE = os.path.join(STATE, paths.CAPTURE)
 # erased. A separate file makes that structurally impossible.
 PROPS_QUEUE = os.path.join(STATE, "props-probe-queue.json")
 # base URL lives in refresh.Api; only the API version is ours to pin here
-VER = "2022-06-28"
+VER = refresh.VER_LATEST
 PORT = 8098
 PATH_PREFIX = "/notion"
 

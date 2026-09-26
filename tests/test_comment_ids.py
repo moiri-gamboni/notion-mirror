@@ -552,7 +552,7 @@ class TestMigrationRefetch(MigrationTestCase):
         calls = []
 
         class Api(FakeApi):
-            def __init__(self, token, rps, bud):
+            def __init__(self, token, rps, bud, **kw):
                 super().__init__(comments=comments)
                 self.budget = bud
 

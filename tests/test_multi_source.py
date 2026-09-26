@@ -38,25 +38,21 @@ class MultiApi:
         self.multi, self.rows_404 = multi, rows_404
         self.calls = []
 
-    def get(self, path, params=None, ver=refresh.VER):
+    def get(self, path, params=None, ver=None):
         self.calls.append((path, ver))
         if path.startswith("/databases/"):
-            if ver == refresh.VER and self.multi:
-                raise refresh.ApiError(400, MULTI)
-            d = {"object": "database", "id": refresh.dashed(DB_ID), "title": [{"plain_text": "Publications"}],
-                 "request_id": "r"}
-            if ver == refresh.VER_DS:
-                d["data_sources"] = [{"id": DS1, "name": "Publications"}, {"id": DS2, "name": "New data source"}]
-            else:
-                d["properties"] = dict(prop("Name", "title"), **prop("URL", "url"))
-            return d
+            srcs = [{"id": DS1, "name": "Publications"}]
+            if self.multi:
+                srcs.append({"id": DS2, "name": "New data source"})
+            return {"object": "database", "id": refresh.dashed(DB_ID),
+                    "title": [{"plain_text": "Publications"}], "request_id": "r", "data_sources": srcs}
         if path == f"/data_sources/{DS1}":
             return {"object": "data_source", "properties": dict(prop("Name", "title"), **prop("URL", "url"))}
         if path == f"/data_sources/{DS2}":
             return {"object": "data_source", "properties": dict(prop("Name", "title"), **prop("Status", "select"))}
         raise AssertionError(f"unexpected GET {path}")
 
-    def query_rows(self, path, body=None, ver=refresh.VER):
+    def query_rows(self, path, body=None, ver=None):
         self.calls.append((path, ver))
         if self.rows_404:
             raise refresh.ApiError(404, "object_not_found")
@@ -75,11 +71,12 @@ class MultiSource(unittest.TestCase):
         self.addCleanup(p.stop)
         self.report = refresh.new_report("daily")
 
-    def test_a_single_source_database_costs_one_request_and_no_sources_line(self):
+    def test_a_single_source_database_has_no_sources_line(self):
         api = MultiApi(multi=False)
         d, sources = refresh.get_database(api, DB_ID)
         self.assertIsNone(sources)
-        self.assertEqual(api.calls, [(f"/databases/{refresh.dashed(DB_ID)}", refresh.VER)])
+        self.assertEqual([p for p, _v in api.calls],
+                         [f"/databases/{refresh.dashed(DB_ID)}", f"/data_sources/{DS1}"])
         self.assertNotIn("Data sources", refresh.schema_md("P", DB_ID, 1, d["properties"]))
 
     def test_a_multi_source_schema_merges_every_source(self):
@@ -94,6 +91,15 @@ class MultiSource(unittest.TestCase):
         self.assertIn("Data sources: Publications `000000000000000000000000000011bf`, "
                       "New data source `00000000000000000000000000006e45`", md)
         self.assertIn("| Status | select |", md)
+
+    def test_a_database_listing_no_source_keeps_its_stored_schema(self):
+        class Empty(MultiApi):
+            def get(self, path, params=None, ver=None):
+                return {"object": "database", "title": [{"plain_text": "P"}], "data_sources": []}
+        props, _t = refresh.refresh_schema_files(Empty(), self.dirpath, DB_ID, "P", 1, self.report)
+        self.assertEqual(props, {})
+        self.assertIn("no data source", self.report["dbs"]["errors"][0]["error"])
+        self.assertFalse(os.path.exists(os.path.join(self.dirpath, "_schema.json")))
 
     def test_another_400_is_still_an_error(self):
         class Refusing(MultiApi):

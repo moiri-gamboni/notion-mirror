@@ -81,7 +81,7 @@ class DryRunWritesNothing(MirrorSandbox):
             p = mock.patch.dict(os.environ, {k: v})
             p.start()
             self.addCleanup(p.stop)
-        for name, value in (("Api", lambda token, rps: self.fake),
+        for name, value in (("Api", lambda token, rps, **kw: self.fake),
                             ("Users", lambda api: self.users)):
             p = mock.patch.object(refresh, name, value)
             p.start()

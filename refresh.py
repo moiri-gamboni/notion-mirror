@@ -63,7 +63,8 @@ import coverage_census
 # sibling script and every test reads them off `refresh.`, and because the tests patch
 # some of them (`refresh.Api`, `refresh.expand_truncated_props`) as module globals,
 # which only works while the name is a global of this module.
-from notion_core.api import API, VER, VER_DS, Api, ApiError, Budget, Truncated  # noqa: F401
+from notion_core.api import (API, VER, VER_DS, VER_LATEST, Api, ApiError, Budget,  # noqa: F401
+                             Truncated)
 from notion_core.flatten import (PAGINATED_PROP_TYPES, cell, expand_truncated_props,  # noqa: F401
                                  fmt_date, fmt_num, md_cell)
 from notion_core.richtext import absorbs_a_paragraph, md_link, plain, rich_md  # noqa: F401
@@ -566,7 +567,9 @@ def db_probe_policy(dirpath, nrows, state, db_id):
 
 
 def query_db_rows(api, db_id):
-    """All rows of a DB. 2022 endpoint first; multi-source DBs via 2025-09-03.
+    """All rows of a DB: every data source it holds, queried in turn (at
+    2025-09-03 and later a database is a container and rows live in its data
+    sources; `GET /databases/{id}` lists them).
 
     Complete past Notion's 10,000-results-per-query cap: `Api.query_rows` windows
     by created_time, so a big DB's overflow rows can no longer be mistaken for
@@ -575,21 +578,15 @@ def query_db_rows(api, db_id):
     a short set, and so does a multi-source database that lists no data source
     to query: the empty row set that produced would diff every live row of it
     as deleted, which is the same failure by a different road."""
-    try:
-        return api.query_rows(f"/databases/{dashed(db_id)}/query"), None
-    except ApiError as e:
-        if e.code in (400,) and "data source" in e.body.lower() or e.code == 400 and "multiple" in e.body.lower():
-            d = api.get(f"/databases/{dashed(db_id)}", ver=VER_DS)
-            rows = []
-            srcs = d.get("data_sources") or []
-            if not srcs:
-                # the report line this lands in is itself truncated at 200 chars
-                raise Truncated(f"/databases/{db_id}: refused as multi-source, then the "
-                                "2025-09-03 fetch listed no data source to query")
-            for s in srcs:
-                rows.extend(api.query_rows(f"/data_sources/{s['id']}/query", ver=VER_DS))
-            return rows, {"data_sources": srcs, "database": d}
-        raise
+    d = api.get(f"/databases/{dashed(db_id)}")
+    srcs = [s for s in d.get("data_sources") or [] if isinstance(s, dict) and s.get("id")]
+    if not srcs:
+        # the report line this lands in is itself truncated at 200 chars
+        raise Truncated(f"/databases/{db_id}: the database lists no data source to query")
+    rows = []
+    for s in srcs:
+        rows.extend(api.query_rows(f"/data_sources/{s['id']}/query"))
+    return rows, {"data_sources": srcs, "database": d}
 
 
 def schema_md(title, db_id, nrows, props, sources=None):
@@ -665,20 +662,18 @@ def get_database(api, db_id):
     query's merged rows and the CSV columns need. The sources come back as the
     second value; a single-source database returns None and its output is
     unchanged."""
-    try:
-        return api.get(f"/databases/{dashed(db_id)}"), None
-    except ApiError as e:
-        if not (e.code == 400 and "multiple data sources" in e.body.lower()):
-            raise
-    d = api.get(f"/databases/{dashed(db_id)}", ver=VER_DS)
+    d = api.get(f"/databases/{dashed(db_id)}")
     sources = [s for s in d.get("data_sources") or [] if isinstance(s, dict) and s.get("id")]
+    if not sources:
+        # an empty schema would blank the schema files; keep the stored one
+        raise Truncated(f"/databases/{db_id}: the database lists no data source")
     props = {}
     for s in sources:
-        ds = api.get(f"/data_sources/{s['id']}", ver=VER_DS)
+        ds = api.get(f"/data_sources/{s['id']}")
         for name, spec in (ds.get("properties") or {}).items():
             props.setdefault(name, spec)
     d["properties"] = props
-    return d, sources
+    return d, (sources if len(sources) > 1 else None)
 
 
 def refresh_schema_files(api, dirpath, db_id, title, nrows, report, force=False,
@@ -1065,13 +1060,18 @@ META_KEYS = ["id", "title", "parent_type", "parent_id", "created_time", "last_ed
 def meta_of(r, users):
     par = r.get("parent", {}) or {}
     pt = par.get("type", "")
+    if pt == "data_source_id":
+        # a row: the mirror keys rows by database, which the parent still names
+        pt, par = "database_id", {"database_id": par.get("database_id")}
     ic = r.get("icon")
     icon = (ic.get("emoji") if ic.get("type") == "emoji" else ic.get("type", "")) if ic else ""
     return {"id": undash(r["id"]), "title": page_title_of(r), "parent_type": pt,
             "parent_id": undash(par.get(pt)) if isinstance(par.get(pt), str) else "",
             "created_time": r.get("created_time"), "last_edited_time": r.get("last_edited_time"),
             "created_by": users.name(r.get("created_by")), "last_edited_by": users.name(r.get("last_edited_by")),
-            "archived": r.get("archived", False), "in_trash": r.get("in_trash", False),
+            # `archived` is gone from 2026-03-11 responses; it always meant trashed
+            "archived": r.get("archived", r.get("in_trash", False)),
+            "in_trash": r.get("in_trash", False),
             "url": r.get("url", ""), "public_url": r.get("public_url"),
             "icon": icon, "has_cover": bool(r.get("cover"))}
 
@@ -3296,10 +3296,11 @@ def phase_discovery(api, users, state, report, args, discovered):
     # search-visible new databases
     try:
         for r in api.paginate("POST", "/search", body={
-                "filter": {"value": "database", "property": "object"},
+                "filter": {"value": "data_source", "property": "object"},
                 "sort": {"timestamp": "last_edited_time", "direction": "descending"},
                 "page_size": 100}):
-            did = undash(r["id"])
+            # a result is a data source; the mirror is keyed by its database
+            did = undash(((r.get("parent") or {}).get("database_id")) or r["id"])
             if not skip_discovery(did, known, state):
                 capture_new_db(api, users, did, state, report, args)
                 known.add(did)
@@ -3660,7 +3661,7 @@ def main():
         except MirrorLocked as e:
             print(f"refresh.py: {e}", file=sys.stderr)
             return 3
-    api = Api(token, args.rps)
+    api = Api(token, args.rps, version=VER_LATEST)
     users = Users(api)
     t0 = time.time()
 

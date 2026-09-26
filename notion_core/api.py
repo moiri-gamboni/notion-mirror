@@ -23,6 +23,10 @@ from .util import log
 API = "https://api.notion.com/v1"
 VER = "2022-06-28"
 VER_DS = "2025-09-03"
+# The newest version (checked 2026-09-26). The mirror engine and the webhook
+# receiver run on it; `Api`'s default stays VER, which is what tasksync, a
+# caller outside this repository, still speaks.
+VER_LATEST = "2026-03-11"
 
 
 class Budget(Exception):
@@ -92,8 +96,10 @@ def _rate_limit_details(body):
 
 
 class Api:
-    def __init__(self, token, rps, budget=None):
+    def __init__(self, token, rps, budget=None, version=VER):
         self.token = token
+        # the Notion-Version sent when a call names none
+        self.version = version
         self.interval = 1.0 / rps
         self.budget = budget
         self.n = 0
@@ -146,7 +152,8 @@ class Api:
         if slot > now:
             time.sleep(slot - now)
 
-    def call(self, method, path, body=None, params=None, ver=VER):
+    def call(self, method, path, body=None, params=None, ver=None):
+        ver = ver or self.version
         self.check_budget()
         url = API + path
         if params:
@@ -204,13 +211,13 @@ class Api:
                 time.sleep(min(2 ** attempt, 30))
         raise ApiError(0, "retries exhausted")
 
-    def get(self, path, params=None, ver=VER):
+    def get(self, path, params=None, ver=None):
         return self.call("GET", path, params=params, ver=ver)
 
-    def post(self, path, body=None, ver=VER):
+    def post(self, path, body=None, ver=None):
         return self.call("POST", path, body=body or {}, ver=ver)
 
-    def query_rows(self, path, body=None, ver=VER):
+    def query_rows(self, path, body=None, ver=None):
         """Every row of a data-source/database query, complete past QUERY_CAP.
 
         Notion caps a single query at QUERY_CAP results: pagination just stops
@@ -287,7 +294,7 @@ class Api:
             log(f"windowed row query: {path} -> {len(rows)} rows in {windows} windows")
         return rows
 
-    def paginate(self, method, path, body=None, params=None, ver=VER):
+    def paginate(self, method, path, body=None, params=None, ver=None):
         cursor = None
         while True:
             if method == "POST":

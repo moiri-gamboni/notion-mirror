@@ -581,7 +581,7 @@ def cmd_capture(args):
     if not token:
         print("NOTION_TOKEN not set", file=sys.stderr)
         return 2
-    api = refresh.Api(token, args.rps, args.budget)
+    api = refresh.Api(token, args.rps, args.budget, version=refresh.VER_LATEST)
     wanted = [t for t in WANTED if t not in
               {c for n in fixture_names() for c in _covers(n)}] if not args.force else list(WANTED)
     print(f"looking for: {', '.join(wanted) or '(nothing missing)'}")

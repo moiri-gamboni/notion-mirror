@@ -64,16 +64,20 @@ def stored_data_source(props):
 
 
 class FakeApi:
-    """Serves one `/databases/{id}` payload. Any other request is a test bug."""
+    """One database at 2026-03-11: `/databases/{id}` lists its data source and
+    `/data_sources/{id}` carries the schema. Any other request is a test bug."""
 
     def __init__(self, payload):
         self.payload = payload
         self.calls = []
 
-    def get(self, path, params=None, ver=refresh.VER):
+    def get(self, path, params=None, ver=None):
         self.calls.append((path, ver))
         if path.startswith("/databases/"):
-            return dict(self.payload, request_id="req-1")
+            d = {k: v for k, v in self.payload.items() if k != "properties"}
+            return dict(d, request_id="req-1", data_sources=[{"id": DS_ID, "name": "Contacts"}])
+        if path == f"/data_sources/{DS_ID}":
+            return {"object": "data_source", "properties": self.payload.get("properties") or {}}
         raise AssertionError(f"unexpected request: {path}")
 
 
@@ -131,6 +135,7 @@ class SchemaDataSourcesTest(unittest.TestCase):
         """It has to converge, or every schema file churns in git nightly."""
         self.seed(database(self.NEW_PROPS), [{"id": DS_ID}])
         path = os.path.join(self.dirpath, "_schema.json")
+        self.run_schema(FakeApi(database(self.NEW_PROPS)))  # the version's reshape, once
         with open(path) as f:
             before = f.read()
         self.run_schema(FakeApi(database(self.NEW_PROPS)))
@@ -172,36 +177,31 @@ class SchemaDataSourcesTest(unittest.TestCase):
         written = self.run_schema(FakeApi(database(self.NEW_PROPS)), data_sources=[])
         self.assertEqual(written["data_sources"], [{"id": DS_ID}])
 
-    def test_a_database_with_no_recorded_data_sources_stays_empty(self):
-        """Nothing is invented for the 353 files whose block the engine's own
-        capture path wrote as `[]` — that gap is a missing fetch, not a value to
-        guess at."""
+    def test_a_database_with_no_recorded_data_sources_gets_them_from_the_live_object(self):
+        """At 2026-03-11 every database object lists its sources, so the 353
+        files the engine's capture path wrote as `[]` fill in on the next pass."""
         self.seed(database(self.OLD_PROPS), [])
         written = self.run_schema(FakeApi(database(self.NEW_PROPS)))
-        self.assertEqual(written["data_sources"], [])
+        self.assertEqual(written["data_sources"], [{"id": DS_ID}])
 
-    def test_the_schema_pass_still_costs_one_request_per_database(self):
-        """The cost ceiling on any fix here: the nightly schema phase is one GET
-        per database — 750 of ~11,200 requests on the 2026-09-22 run — and a
-        second one per database to refresh this block would double the phase
-        against a budget the run already spends 75% of."""
+    def test_the_schema_pass_costs_the_database_and_its_source(self):
+        """Two GETs per single-source database: the object lists the source,
+        the source carries the schema."""
         self.seed(database(self.OLD_PROPS), [stored_data_source(self.OLD_PROPS)])
         api = FakeApi(database(self.NEW_PROPS))
         self.run_schema(api)
-        self.assertEqual([ver for _p, ver in api.calls], [refresh.VER])
+        self.assertEqual([p for p, _v in api.calls],
+                         [f"/databases/{refresh.dashed(DB_ID)}", f"/data_sources/{DS_ID}"])
 
 
 class MultiSourceApi:
-    """A multi-source database: the 2022-06-28 row query refuses it, and the
-    2025-09-03 database object carries the data sources to query instead."""
+    """A database at 2026-03-11: its object lists the data source to query."""
 
     def __init__(self):
         self.n = 0
         self.gets = []
 
-    def query_rows(self, path, body=None, ver=refresh.VER):
-        if path.startswith("/databases/"):
-            raise refresh.ApiError(400, "Your integration must specify a data source to query")
+    def query_rows(self, path, body=None, ver=None):
         assert path == f"/data_sources/{DS_ID}/query", path
         return [{"id": refresh.dashed(ROW_ID),
                  "properties": {"Name": {"id": "title", "type": "title",
@@ -209,9 +209,8 @@ class MultiSourceApi:
                  "parent": {"type": "database_id", "database_id": refresh.dashed(DB_ID)},
                  "last_edited_time": "2026-09-22T09:08:00.000Z"}]
 
-    def get(self, path, params=None, ver=refresh.VER):
+    def get(self, path, params=None, ver=None):
         self.gets.append((path, ver))
-        assert ver == refresh.VER_DS, ver
         return {"object": "database", "id": refresh.dashed(DB_ID),
                 "data_sources": [{"id": DS_ID, "name": "Contacts"}]}
 

@@ -374,7 +374,7 @@ def capture_database(ctx, db_id):
     the database as *present* while its rows are still missing, which is exactly
     the hole being filled here being frozen into the definition of expected."""
     try:
-        d = ctx.api.get(f"/databases/{refresh.dashed(db_id)}")
+        d, _sources = refresh.get_database(ctx.api, db_id)
     except refresh.ApiError as e:
         if e.code in (403, 404):
             reason, note = classify_refusal(ctx, db_id, "child_database", e)
@@ -682,7 +682,7 @@ def main(argv=None):
     have = coverage_census.present_ids(refresh.WS)
     items = work_items(split, progress, have, only=args.only)
 
-    api = refresh.Api(token, args.rps, args.budget)
+    api = refresh.Api(token, args.rps, args.budget, version=refresh.VER_LATEST)
     users = refresh.Users(api)
     state = load_state()
     report = refresh.new_report("coverage-backfill")
