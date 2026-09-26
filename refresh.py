@@ -592,10 +592,15 @@ def query_db_rows(api, db_id):
         raise
 
 
-def schema_md(title, db_id, nrows, props):
+def schema_md(title, db_id, nrows, props, sources=None):
     lines = [f"# Schema — {title}", "",
-             f"`db {db_id}` · {nrows} rows · {len(props)} properties", "",
-             "| Property | Type | Detail |", "|---|---|---|"]
+             f"`db {db_id}` · {nrows} rows · {len(props)} properties", ""]
+    if sources:
+        # only a multi-source database carries this line; its properties below
+        # are every source's, merged in source order
+        lines += ["Data sources: " + ", ".join(f"{s.get('name') or 'untitled'} `{undash(s['id'])}`"
+                                               for s in sources), ""]
+    lines += ["| Property | Type | Detail |", "|---|---|---|"]
     for name, spec in props.items():
         t = spec.get("type", "")
         detail = ""
@@ -647,6 +652,35 @@ def data_source_stubs(stored, fresh=None):
             if isinstance(s, dict) and s.get("id")]
 
 
+def get_database(api, db_id):
+    """A database's schema -> (database object, its data sources or None).
+
+    At Notion-Version 2022-06-28, which every other read here uses, a database's
+    properties are its single data source's; a database with more than one
+    source refuses outright (400 "Databases with multiple data sources are not
+    supported in this API version"). For that one the 2025-09-03 database
+    object is fetched instead, each source's schema read from
+    `/data_sources/{id}`, and their properties merged in source order under
+    `properties` (first source wins a shared name), which is what the row
+    query's merged rows and the CSV columns need. The sources come back as the
+    second value; a single-source database returns None and its output is
+    unchanged."""
+    try:
+        return api.get(f"/databases/{dashed(db_id)}"), None
+    except ApiError as e:
+        if not (e.code == 400 and "multiple data sources" in e.body.lower()):
+            raise
+    d = api.get(f"/databases/{dashed(db_id)}", ver=VER_DS)
+    sources = [s for s in d.get("data_sources") or [] if isinstance(s, dict) and s.get("id")]
+    props = {}
+    for s in sources:
+        ds = api.get(f"/data_sources/{s['id']}", ver=VER_DS)
+        for name, spec in (ds.get("properties") or {}).items():
+            props.setdefault(name, spec)
+    d["properties"] = props
+    return d, sources
+
+
 def refresh_schema_files(api, dirpath, db_id, title, nrows, report, force=False,
                          data_sources=None):
     """GET schema; rewrite _schema.json/_schema.md if content changed.
@@ -658,7 +692,7 @@ def refresh_schema_files(api, dirpath, db_id, title, nrows, report, force=False,
     spath = os.path.join(dirpath, "_schema.json")
     old = jload(spath, {})
     try:
-        d = api.get(f"/databases/{dashed(db_id)}")
+        d, sources = get_database(api, db_id)
     except ApiError as e:
         report["dbs"]["errors"].append({"db": title, "op": "schema", "error": str(e)[:200]})
         return (old.get("database") or {}).get("properties") or {}, title
@@ -668,7 +702,7 @@ def refresh_schema_files(api, dirpath, db_id, title, nrows, report, force=False,
     # round, so the recorded value won and the response's was never reached.
     new = {"id": db_id, "title": live_title, "database": d,
            "data_sources": data_source_stubs(old.get("data_sources"),
-                                             data_sources or d.get("data_sources"))}
+                                             data_sources or sources or d.get("data_sources"))}
     oldn = dict(old.get("database") or {})
     oldn.pop("request_id", None)
     # data_sources is in the predicate, not just in `new`: without it a corrected
@@ -681,15 +715,15 @@ def refresh_schema_files(api, dirpath, db_id, title, nrows, report, force=False,
         if not DRY_RUN:
             jsave(spath, new)
             with open(os.path.join(dirpath, "_schema.md"), "w") as f:
-                f.write(schema_md(live_title, db_id, nrows, props))
-            update_all_schemas(live_title, db_id, nrows, props)
+                f.write(schema_md(live_title, db_id, nrows, props, sources))
+            update_all_schemas(live_title, db_id, nrows, props, sources)
     return d.get("properties") or {}, live_title
 
 
-def update_all_schemas(title, db_id, nrows, props):
+def update_all_schemas(title, db_id, nrows, props, sources=None):
     path = os.path.join(DBS, "_ALL-SCHEMAS.md")
     txt = open(path).read() if os.path.exists(path) else "# All database schemas\n\n"
-    body = schema_md(title, db_id, nrows, props).split("\n", 2)[2]  # drop '# Schema —' header
+    body = schema_md(title, db_id, nrows, props, sources).split("\n", 2)[2]  # drop '# Schema —' header
     section = f"## {title}  `{db_id}`  ({nrows} rows, {len(props)} props)\n{body}"
     pat = re.compile(r"^## .*`" + db_id + r"`.*?(?=^## |\Z)", re.M | re.S)
     if pat.search(txt):
@@ -952,7 +986,7 @@ def remove_all_schemas_section(db_id):
 def capture_new_db(api, users, db_id, state, report, args):
     """First-time capture of a newly discovered database."""
     try:
-        d = api.get(f"/databases/{dashed(db_id)}")
+        d, sources = get_database(api, db_id)
     except ApiError as e:
         # A 4xx is a verdict about the id — not a database, deleted, or not
         # shared — so record it and stop asking. Anything else is a verdict
@@ -972,24 +1006,35 @@ def capture_new_db(api, users, db_id, state, report, args):
     title = plain(d.get("title")) or "Untitled"
     dirname = f"{sanitize(title)} {db_id}"
     dirpath = os.path.join(DBS, dirname)
+    try:
+        rows, _ = query_db_rows(api, db_id)
+    except ApiError as e:
+        if e.code == 404:
+            # The database answers but its rows do not: its data source is not
+            # shared with the integration (a linked database somewhere else, or
+            # sharing withdrawn). Capturing it anyway made an empty directory
+            # that the row sweep deleted again after two 404s, every night; the
+            # `unshared` bucket (shared with coverage_backfill) stops the asking.
+            state["unshared"][db_id] = now_iso()
+            state["db404"].pop(db_id, None)
+            report["notes"].append(f"database '{title[:40]}' ({db_id[:8]}) is visible but its rows "
+                                   "are not shared with the integration — not captured")
+            return
+        rows = []
+        report["dbs"]["errors"].append({"db": title, "op": "new-capture", "error": str(e)[:200]})
     if args.dry_run:
-        report["dbs"]["new"].append({"title": title, "id": db_id, "rows": "?", "dry_run": True})
+        report["dbs"]["new"].append({"title": title, "id": db_id, "rows": len(rows), "dry_run": True})
         return
     os.makedirs(dirpath, exist_ok=True)
     jsave(os.path.join(dirpath, "_schema.json"),
           {"id": db_id, "title": title, "database": d,
            # empty at 2022-06-28, which carries no data_sources: a new database's
            # ids arrive the first time a caller with a live list refreshes it
-           "data_sources": data_source_stubs(None, fresh=d.get("data_sources"))})
-    try:
-        rows, _ = query_db_rows(api, db_id)
-    except ApiError as e:
-        rows = []
-        report["dbs"]["errors"].append({"db": title, "op": "new-capture", "error": str(e)[:200]})
+           "data_sources": data_source_stubs(None, fresh=sources or d.get("data_sources"))})
     props = d.get("properties") or {}
     with open(os.path.join(dirpath, "_schema.md"), "w") as f:
-        f.write(schema_md(title, db_id, len(rows), props))
-    update_all_schemas(title, db_id, len(rows), props)
+        f.write(schema_md(title, db_id, len(rows), props, sources))
+    update_all_schemas(title, db_id, len(rows), props, sources)
     refresh_db(api, users, db_id, dirname, state, report, args, set())
     report["dbs"]["new"].append({"title": title, "id": db_id, "rows": len(rows)})
 
