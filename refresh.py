@@ -2848,7 +2848,7 @@ def _audit_order(ids, last, legacy, legacy_n, share):
     return first, first + [i for i in order if i not in taken][:share]
 
 
-def phase_comment_audit_pages(api, users, meta, state, report, args):
+def phase_comment_audit_pages(api, users, meta, state, report, args, only_legacy=False):
     """The rolling per-block comment audit of the human content pages.
 
     A backstop now: the webhook fold brings new comments in and the resolution
@@ -2866,11 +2866,20 @@ def phase_comment_audit_pages(api, users, meta, state, report, args):
              and not m.get("in_trash") and not m.get("archived")
              and not _is_automation(m["id"], page_index)}
     days = _audit_days("NOTION_REFRESH_PAGE_AUDIT_DAYS", 30)
-    legacy = {s["id"] for s in load_comments_md()[1]
+    sections = load_comments_md()[1]
+    if only_legacy:
+        # --mode legacy-comments: every page still holding one, including a page
+        # the metadata no longer lists (its scan says whether it still exists)
+        for s in sections:
+            if s["id"] not in human and s["id"] not in meta and \
+                    not _is_automation(s["id"], page_index):
+                human[s["id"]] = {"id": s["id"], "title": s["title"]}
+    legacy = {s["id"] for s in sections
               if s["id"] in human and _has_open_legacy(split_bullets(s["body"]))}
     first, due = _audit_order(human, lambda i: scans.get(i, ""), legacy,
+                              len(legacy) if only_legacy else
                               int(os.environ.get("NOTION_REFRESH_LEGACY_PAGES", "60")),
-                              audit_share(len(human), days))
+                              0 if only_legacy else audit_share(len(human), days))
     updates = {}
     with comment_listing(api) as pool:
         for n, pid in enumerate(due, 1):
@@ -2898,8 +2907,10 @@ def phase_comment_audit_pages(api, users, meta, state, report, args):
 
 
 def seed_comment_rows(state):
-    """The row audit's pool, from disk, when there is none: every row file that
-    carries a comments region. Rows join it on write thereafter."""
+    """The row audit's pool: every row file that carries a comments region,
+    re-read from disk each run (about 15 s). Joining only on the engine's own
+    writes left out every row whose comments arrived another way — 239 rows
+    holding id-less comments were outside a 971-row pool on 2026-09-26."""
     crows = state["comment_rows"]
     for _db_id, dirname in db_dirs().items():
         dirpath = os.path.join(DBS, dirname)
@@ -2909,21 +2920,20 @@ def seed_comment_rows(state):
                 continue
             try:
                 if has_comments(open(os.path.join(dirpath, f)).read()):
-                    crows[mm.group(1)] = ""
+                    crows.setdefault(mm.group(1), "")
             except OSError:
                 continue
     log(f"comment-row audit seeded: {len(crows)} rows")
 
 
-def phase_comment_audit_rows(api, users, state, report, args, discovered=None):
+def phase_comment_audit_rows(api, users, state, report, args, discovered=None, only_legacy=False):
     """The rolling per-block comment audit of the comment-bearing DB rows, the
     same backstop as the page audit: every row in the pool re-probed with a full
     comment read once per NOTION_REFRESH_ROW_AUDIT_DAYS (default 14),
     longest-unaudited first, rows holding open id-less comments first
     (NOTION_REFRESH_LEGACY_ROWS, default 100, a night)."""
     crows = state["comment_rows"]
-    if not crows:
-        seed_comment_rows(state)
+    seed_comment_rows(state)
     row_to_db = {rid: db for db, rows in state["rows"].items() for rid in rows}
     for rid in [r for r in crows if r not in row_to_db]:
         crows.pop(rid)  # row deleted since it joined
@@ -2941,8 +2951,9 @@ def phase_comment_audit_rows(api, users, state, report, args, discovered=None):
                     stored_comments_body(txt.split(MARKER, 1)[1]), prefix="- _")):
                 legacy.add(rid)
     first, due = _audit_order(crows, lambda r: crows[r], legacy,
+                              len(legacy) if only_legacy else
                               int(os.environ.get("NOTION_REFRESH_LEGACY_ROWS", "100")),
-                              audit_share(len(crows), days))
+                              0 if only_legacy else audit_share(len(crows), days))
     dirs = db_dirs()
     mds = {}
     done = 0
@@ -3497,7 +3508,7 @@ LOCK_ENV_FD = "NOTION_MIRROR_LOCK_FD"
 # refetch validate can download an attachment it finds missing, which is a fill,
 # not a rewrite), and a `--dry-run` of any mode guards every write, so neither
 # takes the lock — taking it would block a nightly for the length of a read.
-WRITE_MODES = ("daily", "full-comments", "place", "rows")
+WRITE_MODES = ("daily", "full-comments", "place", "rows", "legacy-comments")
 
 
 class MirrorLocked(Exception):
@@ -3583,7 +3594,8 @@ def report_stem(mode, dry_run):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--mode", choices=["daily", "weekly", "monthly", "full-comments", "place",
-                                       "validate", "rows", "contamination-check"],
+                                       "validate", "rows", "contamination-check",
+                                       "legacy-comments"],
                     default="daily",
                     help="daily = everything incremental incl. the webhook fold and the "
                          "rolling per-block comment audit; "
@@ -3591,6 +3603,8 @@ def main():
                          "place = only retry _unplaced placement + regenerate structure.md; "
                          "rows = refresh only the rows named by --rows (plus a props-probe "
                          "drain), touching nothing else; "
+                         "legacy-comments = rescan, once, every page and row still holding "
+                         "an open comment with no id, so the resolution check can reach it; "
                          "weekly/monthly are legacy aliases (daily / full-comments)")
     ap.add_argument("--rows", default="", help="--mode rows: page ids, comma- or space-separated")
     ap.add_argument("--rps", type=float, default=3.0)  # Notion's ~3 req/s per-token cap
@@ -3705,6 +3719,11 @@ def main():
                                 row_md_global_index(), state, report, args)
         elif args.mode == "rows":
             run_phase("rows", phase_rows, api, users, state, report, args, row_ids, discovered)
+        elif args.mode == "legacy-comments":
+            run_phase("audit-pages", phase_comment_audit_pages, api, users, load_meta_jsonl()[0],
+                      state, report, args, only_legacy=True)
+            run_phase("audit-rows", phase_comment_audit_rows, api, users, state, report, args,
+                      discovered, only_legacy=True)
         else:
             check_webhook_liveness(report)
             consume_db_events(state, report, discovered)
@@ -3786,7 +3805,7 @@ def main():
         # named row, rendering its comment bullets into the row file, and the
         # hourly job commits them 24 times a day. Cost of including it, measured
         # against the live corpus: 6.55s, no API requests.
-        if args.mode in ("daily", "full-comments", "rows"):
+        if args.mode in ("daily", "full-comments", "rows", "legacy-comments"):
             try:
                 breaches = record_contamination_check(build_comment_index(),
                                                       load_contamination_baseline(), report)

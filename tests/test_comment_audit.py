@@ -87,6 +87,16 @@ class PageAudit(MirrorSandbox):
         self.assertEqual(self.api.walked(), [pid(7), pid(1)], "the legacy page, then the share")
         self.assertEqual(self.report["comments"]["audit"]["legacy_pages_scanned"], 1)
 
+    def test_legacy_mode_scans_exactly_the_pages_holding_id_less_comments(self):
+        legacy = "- **on** \"(page-level)\" — Someone (2024-01-01): old <!-- notion:cid legacy -->"
+        refresh.update_comments_md({pid(5): {"title": "P5", "bullets": [legacy]},
+                                    pid(9): {"title": "Log", "bullets": [legacy]}},
+                                   refresh.new_report("x"), merge=False)
+        meta, _ = refresh.load_meta_jsonl()
+        refresh.phase_comment_audit_pages(self.api, self.users, meta, self.st, self.report,
+                                          types.SimpleNamespace(dry_run=False), only_legacy=True)
+        self.assertEqual(self.api.walked(), [pid(5)], "never an automation page, never the share")
+
     def test_a_nonsense_cycle_length_refuses(self):
         with mock.patch.dict(os.environ, {"NOTION_REFRESH_PAGE_AUDIT_DAYS": "0"}):
             with self.assertRaises(ValueError):
@@ -140,6 +150,11 @@ class RowAudit(MirrorSandbox):
         body = refresh.extract_comments_body(self.read(path).split(refresh.MARKER, 1)[1])
         self.assertIn("fresh", body)
         self.assertIn("resolved/deleted", body, "the stored comment the API no longer lists")
+
+    def test_a_commented_row_outside_the_pool_joins_it(self):
+        del self.st["comment_rows"][pid(5)]
+        self.run_audit()
+        self.assertIn(pid(5), self.st["comment_rows"])
 
     def test_the_row_cycle_is_configurable(self):
         with mock.patch.dict(os.environ, {"NOTION_REFRESH_ROW_AUDIT_DAYS": "1"}):
