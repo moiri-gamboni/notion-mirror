@@ -534,6 +534,10 @@ np_, cp = len(p["new"]), len(p["changed"])
 if np_ or cp: bits.append(f"{cp} pages changed, {np_} new")
 if p["deleted"]: bits.append(f"{len(p['deleted'])} pages deleted")
 if c.get("added") or c.get("retained"): bits.append(f"comments +{c.get('added',0)}/~{c.get('retained',0)} resolved-kept")
+dd = c.get("dedup") or {}
+if dd: bits.append(f"comments deduplicated: {dd.get('sections_moved',0)} row sections moved to their rows, "
+                   f"-{dd.get('repeats_dropped',0)} repeated ids, -{dd.get('legacy_dropped',0)} id-less copies, "
+                   f"-{dd.get('child_page_copies_dropped',0)} child-page copies")
 bits.append(f"{r['requests']} req · {max(1, r['duration_s'] // 60)}m")
 print("; ".join(bits) or "changes")
 EOF
