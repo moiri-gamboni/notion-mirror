@@ -293,8 +293,9 @@ def body_section_lines(body):
 
 
 def comments_section_lines(bullets):
-    """The `## Comments` region as `parts` entries (see probe_row)."""
-    return ["", "## Comments", "", COMMENTS_OPEN, *bullets, COMMENTS_CLOSE]
+    """The `## Comments` region as `parts` entries (see probe_row), one bullet per
+    comment (`reconcile_bullets`)."""
+    return ["", "## Comments", "", COMMENTS_OPEN, *reconcile_bullets(bullets), COMMENTS_CLOSE]
 
 
 def body_section(body):
@@ -1407,6 +1408,126 @@ def dedup_by_cid(bullets):
     return out
 
 
+_PAGE_BULLET = re.compile(r'- \*\*on\*\* "(.*?)" — (.*?) \((\d{4}-\d\d-\d\d)\): ?(.*)', re.S)
+_ROW_BULLET = re.compile(r"- _(.*?) \((\d{4}-\d\d-\d\d)\):_ ?(.*)", re.S)
+_WILD = "\x00"
+# a markdown link, a URL, an @-mention's first word and the `‣` an older
+# renderer wrote for any mention all stand for "a mention was here"
+_TOKEN = re.compile(r"\[[^\]]*\]\([^)]*\)|https?://\S+|@\S+|‣|[^\W_]+")
+
+
+def _bullet_parts(b):
+    """(anchor or None for a row bullet, author, day, text) of a bullet, marks off."""
+    t = bullet_text_key(b)
+    m = _PAGE_BULLET.match(t)
+    if m:
+        return m.group(1), m.group(2), m.group(3), m.group(4)
+    m = _ROW_BULLET.match(t)
+    return (None, m.group(1), m.group(2), m.group(3)) if m else None
+
+
+def _words(text):
+    """Lower-case words, with each mention-like token (and the run of them) as one
+    wildcard: the renderer that wrote a legacy bullet and today's disagree on
+    exactly those."""
+    out = []
+    for tok in _TOKEN.findall(text):
+        if tok[0] in "[@‣" or tok.startswith("http"):
+            if not (out and out[-1][0] == _WILD):
+                out.append((_WILD, 0))
+            out[-1] = (_WILD, out[-1][1] + 1)
+        else:
+            out.append((tok.lower(), 0))
+    return out
+
+
+def _covers(pattern, words):
+    """Does `pattern` read as `words`, each wildcard standing for up to four words
+    per mention it replaced (a user's name, a date, a page title)?"""
+    rx = "".join(r"(?:\S+ ){0,%d}" % (4 * n) if w == _WILD else re.escape(w) + " "
+                 for w, n in pattern)
+    return re.fullmatch(rx, "".join(w + " " for w, _n in words)) is not None
+
+
+def same_comment(legacy, ided):
+    """Is the id-less bullet `legacy` the comment the id-bearing `ided` renders?
+
+    Same author and day, and the same words once mentions and link targets are
+    set aside, in either direction. The anchor is not compared: an older
+    renderer cut it elsewhere or wrote a table row as "(table row)". A text of
+    one or two words ("done", "sent ✅") is said more than once a day, so it
+    pairs only on the same anchor, and in a row, which records none, never."""
+    a, b = _bullet_parts(legacy), _bullet_parts(ided)
+    if not a or not b or a[1:3] != b[1:3]:
+        return False
+    wa, wb = _words(a[3]), _words(b[3])
+    literal = sum(1 for w, _n in wa if w != _WILD)
+    if literal == 0:
+        return False
+    if literal <= 2 and (a[0] is None or b[0] is None or a[0].strip().lower() != b[0].strip().lower()):
+        return False
+    return _covers(wa, wb) or _covers(wb, wa)
+
+
+def legacy_pairs(bullets):
+    """{index of an id-less bullet: index of the id-bearing bullet it is}, one to
+    one, first come first served."""
+    ided = [j for j, b in enumerate(bullets) if bullet_cid(b)]
+    claimed, out = set(), {}
+    for i, b in enumerate(bullets):
+        if bullet_cid(b):
+            continue
+        for j in ided:
+            if j not in claimed and same_comment(b, bullets[j]):
+                out[i] = j
+                claimed.add(j)
+                break
+    return out
+
+
+def reconcile_bullets(bullets):
+    """One bullet per comment: repeats of an id dropped (the first kept), and an
+    id-less bullet dropped when the id-bearing bullet of the same comment is
+    there. Every writer of a comment list goes through here."""
+    out = dedup_by_cid(bullets)
+    drop = legacy_pairs(out)
+    return [b for i, b in enumerate(out) if i not in drop]
+
+
+def upgrade_legacy(bullets, b, keep_mark=False):
+    """Put the id-bearing bullet `b` in place of the id-less bullet in `bullets`
+    that is the same comment (or has its exact text). With `keep_mark`, a
+    resolved annotation on the replaced bullet carries over. -> its index or None."""
+    key = bullet_text_key(b)
+    for i, old in enumerate(bullets):
+        if bullet_cid(old) or not (bullet_text_key(old) == key or same_comment(old, b)):
+            continue
+        m = RESOLVED_MARK.search(old) if keep_mark else None
+        bullets[i] = annotate_resolved(b, re.search(r"\d{4}-\d\d-\d\d", m.group(0)).group(0)) \
+            if m and not RESOLVED_MARK.search(b) else b
+        return i
+    return None
+
+
+def to_row_bullet(b):
+    """A `_comments.md` bullet in a row file's form: the anchor goes (rows record
+    none), continuation lines are indented, and the resolved mark and the id
+    trailer go on the first line. An anchor can run over several lines, so the
+    trailer is not always on the text's first line; it is read off the whole
+    bullet."""
+    m = re.match(r'- \*\*on\*\* "(.*?)" — (.*?) \((.*?)\): ?(.*)', bullet_text_key(b), re.S)
+    if not m:
+        return b
+    lines = m.group(4).split("\n")
+    out = f"- _{m.group(2)} ({m.group(3)}):_ {lines[0]}" + "".join(
+        "\n" + (ln if ln.startswith("  ") or not ln.strip() else "  " + ln) for ln in lines[1:])
+    cid = CID_MARK.search(b)
+    out = stamp_cid(out, *(("", "") if not cid or cid.group(1) == CID_LEGACY
+                           else (cid.group(1), cid.group(2) or "")))
+    gone = RESOLVED_MARK.search(b)
+    return annotate_resolved(out, re.search(r"\d{4}-\d\d-\d\d", gone.group(0)).group(0)) if gone else out
+
+
 def live_index(new_bullets):
     """(ids, texts) of a fresh scan — what a stored bullet is checked against."""
     ids = {c for c in map(bullet_cid, new_bullets) if c}
@@ -1443,17 +1564,22 @@ def merge_comment_bullets(old_body, new_bullets, today, prefix="- **on**"):
     new_bullets = [gone.get(bullet_cid(n), n) if RESOLVED_MARK.search(n) else n
                    for n in new_bullets]
     ids, texts = live_index(new_bullets)
+    olds = split_bullets(old_body, prefix)
+    n = len(new_bullets)
+    # an id-less stored bullet that is one of the fresh comments: the fresh copy
+    # replaces it, rather than it being annotated and kept beside that copy
+    upgraded = {i - n for i, j in legacy_pairs(list(new_bullets) + olds).items() if i >= n > j}
     retained = []
     newly = 0
-    for b in split_bullets(old_body, prefix):
-        if still_live(b, ids, texts):
+    for k, b in enumerate(olds):
+        if k in upgraded or still_live(b, ids, texts):
             continue  # still live (or reappeared): the fresh copy wins, unannotated
         if RESOLVED_MARK.search(b):
             retained.append(b)  # annotated on an earlier run, keep as-is
         else:
             retained.append(annotate_resolved(b, today))
             newly += 1
-    return list(new_bullets) + retained, newly
+    return reconcile_bullets(list(new_bullets) + retained), newly
 
 
 # ------------------------------------------------- webhook capture integration
@@ -1599,7 +1725,15 @@ def fold_bullets(stored, caps, last_scan, users, row_format, deletions, today):
                 out[i] = b
                 updated += 1
             continue
-        if bullet_text_key(b) in legacy or (not cid and still_live(b, *live_index(out))):
+        if cid:
+            # the same comment on disk under no id takes the id where it stands:
+            # open when the capture is newer than the scan, else as the scan left it
+            i = upgrade_legacy(out, b, keep_mark=not fresh)
+            if i is not None:
+                pos[cid] = i
+                updated += 1
+                continue
+        elif bullet_text_key(b) in legacy or still_live(b, *live_index(out)):
             continue  # already on disk under no id, matched by text
         out.append(b if fresh else annotate_resolved(b, gone_by))
         added += 1
@@ -2101,23 +2235,35 @@ def update_comments_md(updates, report, merge=True):
 
     `merge=False` is for bullets that already are the whole section — a fold,
     which started from the stored section — so nothing is annotated here and
-    the added/retained counts are the caller's to record."""
+    the added/retained counts are the caller's to record.
+
+    An id with a row file is a database row (a wiki page is a row of its wiki
+    database too), and a row's comments live in its row file: its update goes
+    there (`write_row_comments`), together with any section the file still held
+    for it, which is dropped."""
     if not updates:
         return
     today = dt.datetime.now(UTC).strftime("%Y-%m-%d")
     head, sections, appendix = load_comments_md()
-    if not head:
-        head = "# Notion comments (content pages)\n\n_Inline reviewer comments captured per-block via `/v1/comments`. DB-row comments live in each row's `.md` under `workspace/_databases/`._\n\n"
     by_id = {s["id"]: s for s in sections}
+    rows = row_md_global_index()
     n_add = n_ret = 0
     for pid, u in updates.items():
         old = by_id.get(pid)
+        if pid in rows:
+            stored = split_bullets(old["body"]) if old else []
+            n_ret += write_row_comments(rows[pid], [to_row_bullet(b) for b in u["bullets"]],
+                                        [to_row_bullet(b) for b in stored], merge, today)
+            if old:
+                sections.remove(old)
+                by_id.pop(pid)
+            continue
         if merge:
             merged, newly_retained = merge_comment_bullets(old["body"] if old else "",
                                                            u["bullets"], today)
             n_ret += newly_retained
         else:
-            merged = list(u["bullets"])
+            merged = reconcile_bullets(u["bullets"])
         if not merged:
             if old:
                 sections.remove(old)
@@ -2135,6 +2281,13 @@ def update_comments_md(updates, report, merge=True):
     if merge:
         report["comments"]["added"] += n_add
         report["comments"]["retained"] += n_ret
+    write_comments_md(head, sections, appendix)
+
+
+def write_comments_md(head, sections, appendix):
+    """`_comments.md` from its parts (`load_comments_md`), with the stats trailer."""
+    if not head:
+        head = "# Notion comments (content pages)\n\n_Inline reviewer comments captured per-block via `/v1/comments`. DB-row comments live in each row's `.md` under `workspace/_databases/`._\n\n"
     total = sum(s["body"].count("- **on**") for s in sections)
     note = " (plus the truncation-backfill appendix)" if appendix else ""
     tail = (f"\n---\n_{total} comments across {len(sections)} pages{note}. Resolved/deleted threads are"
@@ -2144,6 +2297,32 @@ def update_comments_md(updates, report, merge=True):
         + "\n" + (appendix if appendix else "") + tail
     with open(os.path.join(WS, "_comments.md"), "w") as f:
         f.write(out)
+
+
+def write_row_comments(where, bullets, extra_stored, merge, today, dry_run=False):
+    """Page-tier comment bullets (already in row form) into a row file: merged
+    like a probe's when `merge`, else taken as the whole list; `extra_stored` is
+    what a `_comments.md` section still held for the row, stored comments too.
+    A row file with no enrichment region gets one. -> newly annotated count."""
+    dirname, fname = where
+    path = os.path.join(DBS, dirname, fname)
+    txt = open(path).read()
+    if MARKER in txt:
+        head, enr = txt.split(MARKER, 1)
+    else:
+        head, enr = txt.rstrip("\n") + "\n\n", ""
+    stored = split_bullets(stored_comments_body(enr), prefix="- _") + list(extra_stored)
+    newly = 0
+    if merge:
+        new, newly = merge_comment_bullets("\n".join(stored), bullets, today, prefix="- _")
+    else:
+        have = {bullet_cid(b) for b in bullets if bullet_cid(b)}
+        new = list(bullets) + [b for b in stored if not bullet_cid(b) or bullet_cid(b) not in have]
+    out = head + MARKER + (with_comments(enr, new) or "\n")
+    if out != txt and not dry_run:
+        with open(path, "w") as f:
+            f.write(out)
+    return newly
 
 
 # ------------------------------------------------------------- structure.md
@@ -2903,6 +3082,151 @@ def _audit_order(ids, last, legacy, legacy_n, share):
     return first, first + [i for i in order if i not in taken][:share]
 
 
+def _same_in(b, bullets):
+    """Is the comment `b` renders among `bullets` (by id, else by author, day and
+    words, anchors aside)?"""
+    cid = bullet_cid(b)
+    for x in bullets:
+        if cid and bullet_cid(x) == cid:
+            return True
+        if not cid or not bullet_cid(x):
+            if same_comment(b, x) if not cid else same_comment(x, b):
+                return True
+            pb, px = _bullet_parts(b), _bullet_parts(x)
+            if pb and px and pb[1:] == px[1:]:
+                return True
+    return False
+
+
+def phase_comment_dedup(api, state, report, args, meta_titles=None):
+    """--mode comment-dedup, once: bring the stored comments to one bullet per
+    comment in one place, as every writer now keeps them.
+
+    1. A `_comments.md` section for an id with a row file moves into the row file.
+    2. Every section and row loses its repeated ids and the id-less bullets whose
+       id-bearing copy sits beside them (`reconcile_bullets`).
+    3. A comment held by more than one object is kept only where its thread is,
+       when its thread is one of those objects: a page's scan used to list its
+       child pages' page-level comments too. The thread comes from
+       `comment-parents.json`, else from `GET /comments/{id}` (a few dozen). A
+       thread on a block elsewhere (a synced block shown in both pages) stays in
+       both.
+    """
+    today = dt.datetime.now(UTC).strftime("%Y-%m-%d")
+    head, sections, appendix = load_comments_md()
+    rows = row_md_global_index()
+    parents = state["comment_parents"]
+    st = {"sections_moved": 0, "moved_bullets": 0, "legacy_dropped": 0, "repeats_dropped": 0,
+          "child_page_copies_dropped": 0, "thread_lookups": 0, "rows_changed": 0,
+          "sections_changed": 0}
+    places, originals, row_txt = {}, {}, {}   # id -> bullets; id -> as found; id -> file text
+    for rid, where in rows.items():
+        try:
+            txt = open(os.path.join(DBS, *where)).read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if MARKER in txt and has_comments(txt.split(MARKER, 1)[1]):
+            row_txt[rid] = txt
+            places[rid] = originals[rid] = split_bullets(stored_comments_body(txt.split(MARKER, 1)[1]),
+                                                          prefix="- _")
+    kept = []
+    for sec in sections:
+        bs = split_bullets(sec["body"])
+        if sec["id"] in rows:
+            st["sections_moved"] += 1
+            st["moved_bullets"] += len(bs)
+            places[sec["id"]] = places.get(sec["id"], []) + [to_row_bullet(b) for b in bs]
+            originals.setdefault(sec["id"], [])
+            continue
+        kept.append(sec)
+        places[sec["id"]] = originals[sec["id"]] = bs
+    for i, bs in places.items():
+        once = dedup_by_cid(bs)
+        st["repeats_dropped"] += len(bs) - len(once)
+        places[i] = reconcile_bullets(once)
+        st["legacy_dropped"] += len(once) - len(places[i])
+    holders = collections.defaultdict(set)
+    for i, bs in places.items():
+        for b in bs:
+            if bullet_cid(b):
+                holders[bullet_cid(b)].add(i)
+    for cid, ids in holders.items():
+        if len(ids) < 2:
+            continue
+        b = next(x for x in places[next(iter(ids))] if bullet_cid(x) == cid)
+        did = (CID_MARK.search(b).group(2) or "") if CID_MARK.search(b) else ""
+        home = parents.get(did) if did else None
+        if home is None:
+            st["thread_lookups"] += 1
+            try:
+                par = api.get(f"/comments/{dashed(cid)}").get("parent") or {}
+            except ApiError:
+                continue
+            home = par.get("page_id") or par.get("block_id")
+            if not home:
+                continue
+            if did:
+                parents[did] = undash(home)
+        home = undash(home)
+        if home not in ids:
+            continue
+        for i in ids - {home}:
+            places[i] = [x for x in places[i] if bullet_cid(x) != cid]
+            st["child_page_copies_dropped"] += 1
+    # What no thread can place (a resolved or deleted comment, a bullet with no
+    # id): the parent's copy is anchored on the child page's title, and the child
+    # holds the same comment.
+    titles = collections.defaultdict(set)
+    for sec in sections:
+        titles[sec["title"].strip()[:90]].add(sec["id"])
+    for rid in places:
+        t = (meta_titles or {}).get(rid)
+        if t:
+            titles[t.strip()[:90]].add(rid)
+    for i in list(places):
+        keep = []
+        for b in places[i]:
+            parts = _bullet_parts(b)
+            others = titles.get((parts[0] or "").strip()[:90], set()) - {i} if parts and parts[0] else set()
+            if any(_same_in(b, places.get(y, [])) for y in others):
+                st["child_page_copies_dropped"] += 1
+                continue
+            keep.append(b)
+        places[i] = keep
+    if not args.dry_run:
+        for rid, where in rows.items():
+            if rid not in places or places[rid] == originals.get(rid):
+                continue
+            st["rows_changed"] += 1
+            txt = row_txt.get(rid) or open(os.path.join(DBS, *where)).read()
+            if MARKER in txt:
+                h, enr = txt.split(MARKER, 1)
+            else:
+                h, enr = txt.rstrip("\n") + "\n\n", ""
+            with open(os.path.join(DBS, *where), "w") as f:
+                f.write(h + MARKER + (with_comments(enr, places[rid]) or "\n"))
+    else:
+        st["rows_changed"] = sum(1 for rid in rows if rid in places and places[rid] != originals.get(rid))
+    out = []
+    for sec in kept:
+        bs = places[sec["id"]]
+        if bs != originals[sec["id"]]:
+            st["sections_changed"] += 1
+            if not bs:
+                continue
+            sec = dict(sec, body="\n" + "\n".join(bs) + "\n\n")
+        out.append(sec)
+    if not args.dry_run and (st["sections_moved"] or st["sections_changed"]):
+        write_comments_md(head, out, appendix)
+    report["comments"]["dedup"] = st
+    log(f"comment dedup: {st['sections_moved']} row section(s) moved into their rows "
+        f"({st['moved_bullets']} bullets); dropped {st['repeats_dropped']} repeated ids, "
+        f"{st['legacy_dropped']} id-less bullets beside their id-bearing copy and "
+        f"{st['child_page_copies_dropped']} copies of a child page's comments "
+        f"({st['thread_lookups']} thread lookups); "
+        f"{st['sections_changed']} sections and {st['rows_changed']} rows rewritten")
+
+
 def phase_comment_audit_pages(api, users, meta, state, report, args, only_legacy=False):
     """The rolling per-block comment audit of the human content pages.
 
@@ -3258,8 +3582,8 @@ def phase_resolution_check(api, users, state, report, args):
             block = block_of[c.cid]
             parents.setdefault(c.did or c.cid, block)  # known now: no lookup next night
             b = _render(c, kind, anchor_of.get(block, "(page-level)"))
-            if bullet_text_key(b) in legacy:
-                continue  # already here as an id-less bullet
+            if upgrade_legacy(new, b) is not None:
+                continue  # here as an id-less bullet, which takes the id and is open
             new.append(b)
             stats["added"] += 1
         if new == bs:
@@ -3568,7 +3892,7 @@ LOCK_ENV_FD = "NOTION_MIRROR_LOCK_FD"
 # refetch validate can download an attachment it finds missing, which is a fill,
 # not a rewrite), and a `--dry-run` of any mode guards every write, so neither
 # takes the lock — taking it would block a nightly for the length of a read.
-WRITE_MODES = ("daily", "full-comments", "place", "rows", "legacy-comments")
+WRITE_MODES = ("daily", "full-comments", "place", "rows", "legacy-comments", "comment-dedup")
 
 
 class MirrorLocked(Exception):
@@ -3655,7 +3979,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--mode", choices=["daily", "weekly", "monthly", "full-comments", "place",
                                        "validate", "rows", "contamination-check",
-                                       "legacy-comments"],
+                                       "legacy-comments", "comment-dedup"],
                     default="daily",
                     help="daily = everything incremental incl. the webhook fold and the "
                          "rolling per-block comment audit; "
@@ -3665,6 +3989,8 @@ def main():
                          "drain), touching nothing else; "
                          "legacy-comments = rescan, once, every page and row still holding "
                          "an open comment with no id, so the resolution check can reach it; "
+                         "comment-dedup = once, no requests: one bullet per comment, row "
+                         "comments in row files; "
                          "weekly/monthly are legacy aliases (daily / full-comments)")
     ap.add_argument("--rows", default="", help="--mode rows: page ids, comma- or space-separated")
     ap.add_argument("--rps", type=float, default=3.0)  # Notion's ~3 req/s per-token cap
@@ -3784,6 +4110,9 @@ def main():
                       state, report, args, only_legacy=True)
             run_phase("audit-rows", phase_comment_audit_rows, api, users, state, report, args,
                       discovered, only_legacy=True)
+        elif args.mode == "comment-dedup":
+            run_phase("comment-dedup", phase_comment_dedup, api, state, report, args,
+                      {i: m.get("title") or "" for i, m in load_meta_jsonl()[0].items()})
         else:
             check_webhook_liveness(report)
             consume_db_events(state, report, discovered)
@@ -3866,7 +4195,7 @@ def main():
         # named row, rendering its comment bullets into the row file, and the
         # hourly job commits them 24 times a day. Cost of including it, measured
         # against the live corpus: 6.55s, no API requests.
-        if args.mode in ("daily", "full-comments", "rows", "legacy-comments"):
+        if args.mode in ("daily", "full-comments", "rows", "legacy-comments", "comment-dedup"):
             try:
                 breaches = record_contamination_check(build_comment_index(),
                                                       load_contamination_baseline(), report)
@@ -3892,6 +4221,9 @@ def main():
                        or report["pages"]["changed"] or report["pages"]["new"] or report["pages"]["deleted"]
                        or report["pages"]["renamed"] or report["pages"]["placed"]
                        or report["comments"]["added"] or report["comments"]["retained"]
+                       or (report["comments"].get("dedup") or {}).get("rows_changed")
+                       or (report["comments"].get("dedup") or {}).get("sections_changed")
+                       or (report["comments"].get("dedup") or {}).get("sections_moved")
                        or report.get("rows", {}).get("refreshed")
                        or report.get("props_probe", {}).get("drained"))
     print(json.dumps({"changes": has_changes, "requests": api.n}))

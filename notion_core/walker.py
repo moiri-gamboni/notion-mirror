@@ -151,7 +151,10 @@ class Walker:
 
         anchor = plain(data.get("rich_text")) or (
             data.get("title") if t in ("child_page", "child_database") else "") or f"({t})"
-        self.block_anchors.append((b["id"], anchor[:90]))
+        # a child_page block's id is the child page's, so listing its comments reads
+        # the child's page-level discussions: the child's own, mirrored with it
+        if t != "child_page":
+            self.block_anchors.append((b["id"], anchor[:90]))
 
         if t == "child_page":
             pid = undash(b["id"])
