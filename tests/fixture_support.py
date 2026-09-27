@@ -146,7 +146,7 @@ def types_in(payloads):
         if t:
             out.add(t)
         data = b.get(t, {}) or {}
-        if isinstance(data, dict):
+        if isinstance(data, dict) and isinstance(data.get("children"), list):
             out |= types_in(data.get("children"))
     return out
 

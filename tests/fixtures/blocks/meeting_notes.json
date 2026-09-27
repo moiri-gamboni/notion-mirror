@@ -1,0 +1,436 @@
+{
+ "name": "meeting_notes",
+ "provenance": "synthetic: the shape of an AI meeting-notes block as Notion-Version 2026-03-11 returns it, with invented ids and text",
+ "covers": [
+  "meeting_notes",
+  "transcription"
+ ],
+ "blocks": [
+  {
+   "object": "block",
+   "id": "00000000-0000-0000-0000-000000007bbc",
+   "parent": {
+    "type": "page_id",
+    "page_id": "00000000-0000-0000-0000-00000000450d"
+   },
+   "created_time": "2026-04-10T19:20:00.000Z",
+   "last_edited_time": "2026-04-10T20:53:00.000Z",
+   "created_by": {
+    "object": "user",
+    "id": "00000000-0000-0000-0000-000000003739"
+   },
+   "last_edited_by": {
+    "object": "user",
+    "id": "00000000-0000-0000-0000-000000003739"
+   },
+   "has_children": true,
+   "in_trash": false,
+   "type": "meeting_notes",
+   "meeting_notes": {
+    "title": [
+     {
+      "type": "text",
+      "text": {
+       "content": "Synthetic fjord bravo ember alpha bravo grove line.",
+       "link": null
+      },
+      "annotations": {
+       "bold": false,
+       "italic": false,
+       "strikethrough": false,
+       "underline": false,
+       "code": false,
+       "color": "default"
+      },
+      "plain_text": "Synthetic fjord bravo ember alpha bravo grove line.",
+      "href": null
+     }
+    ],
+    "status": "notes_ready",
+    "children": {
+     "summary_block_id": "00000000-0000-0000-0000-00000000b4ae",
+     "notes_block_id": "00000000-0000-0000-0000-00000000bcfb",
+     "transcript_block_id": "00000000-0000-0000-0000-00000000f0ce"
+    },
+    "calendar_event": {
+     "attendees": [
+      "00000000-0000-0000-0000-00000000762a",
+      "00000000-0000-0000-0000-000000003739",
+      "00000000-0000-0000-0000-000000004f3a"
+     ],
+     "start_time": "2026-04-10T15:30:00.000-04:00",
+     "end_time": "2026-04-10T16:00:00.000-04:00"
+    },
+    "recording": {
+     "start_time": "2026-04-10T19:30:00.000Z"
+    }
+   }
+  }
+ ],
+ "children": {
+  "00000000-0000-0000-0000-00000000b4ae": [
+   {
+    "object": "block",
+    "id": "00000000-0000-0000-0000-000000006c3f",
+    "parent": {
+     "type": "block_id",
+     "block_id": "00000000-0000-0000-0000-00000000b4ae"
+    },
+    "created_time": "2026-04-10T20:55:00.000Z",
+    "last_edited_time": "2026-04-10T20:55:00.000Z",
+    "created_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "last_edited_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "has_children": false,
+    "in_trash": false,
+    "type": "heading_3",
+    "heading_3": {
+     "rich_text": [
+      {
+       "type": "text",
+       "text": {
+        "content": "Synthetic cedar alpha juniper grove fjord cedar line.",
+        "link": null
+       },
+       "annotations": {
+        "bold": false,
+        "italic": false,
+        "strikethrough": false,
+        "underline": false,
+        "code": false,
+        "color": "default"
+       },
+       "plain_text": "Synthetic cedar alpha juniper grove fjord cedar line.",
+       "href": null
+      }
+     ],
+     "is_toggleable": false,
+     "color": "default"
+    }
+   },
+   {
+    "object": "block",
+    "id": "00000000-0000-0000-0000-000000007db3",
+    "parent": {
+     "type": "block_id",
+     "block_id": "00000000-0000-0000-0000-00000000b4ae"
+    },
+    "created_time": "2026-04-10T20:55:00.000Z",
+    "last_edited_time": "2026-04-10T20:55:00.000Z",
+    "created_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "last_edited_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "has_children": false,
+    "in_trash": false,
+    "type": "to_do",
+    "to_do": {
+     "rich_text": [
+      {
+       "type": "text",
+       "text": {
+        "content": "Synthetic grove grove fjord grove harbor harbor line.",
+        "link": null
+       },
+       "annotations": {
+        "bold": false,
+        "italic": false,
+        "strikethrough": false,
+        "underline": false,
+        "code": false,
+        "color": "default"
+       },
+       "plain_text": "Synthetic grove grove fjord grove harbor harbor line.",
+       "href": null
+      },
+      {
+       "type": "text",
+       "text": {
+        "content": " ",
+        "link": null
+       },
+       "annotations": {
+        "bold": false,
+        "italic": false,
+        "strikethrough": false,
+        "underline": false,
+        "code": false,
+        "color": "default"
+       },
+       "plain_text": " ",
+       "href": null
+      }
+     ],
+     "checked": false,
+     "color": "default"
+    }
+   },
+   {
+    "object": "block",
+    "id": "00000000-0000-0000-0000-00000000a16d",
+    "parent": {
+     "type": "block_id",
+     "block_id": "00000000-0000-0000-0000-00000000b4ae"
+    },
+    "created_time": "2026-04-10T20:55:00.000Z",
+    "last_edited_time": "2026-04-10T20:55:00.000Z",
+    "created_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "last_edited_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "has_children": false,
+    "in_trash": false,
+    "type": "to_do",
+    "to_do": {
+     "rich_text": [
+      {
+       "type": "text",
+       "text": {
+        "content": "Synthetic ember alpha grove fjord bravo delta line.",
+        "link": null
+       },
+       "annotations": {
+        "bold": false,
+        "italic": false,
+        "strikethrough": false,
+        "underline": false,
+        "code": false,
+        "color": "default"
+       },
+       "plain_text": "Synthetic ember alpha grove fjord bravo delta line.",
+       "href": null
+      },
+      {
+       "type": "text",
+       "text": {
+        "content": " ",
+        "link": null
+       },
+       "annotations": {
+        "bold": false,
+        "italic": false,
+        "strikethrough": false,
+        "underline": false,
+        "code": false,
+        "color": "default"
+       },
+       "plain_text": " ",
+       "href": null
+      }
+     ],
+     "checked": false,
+     "color": "default"
+    }
+   }
+  ],
+  "00000000-0000-0000-0000-00000000bcfb": [
+   {
+    "object": "block",
+    "id": "00000000-0000-0000-0000-00000000ba07",
+    "parent": {
+     "type": "block_id",
+     "block_id": "00000000-0000-0000-0000-00000000bcfb"
+    },
+    "created_time": "2026-04-10T19:21:00.000Z",
+    "last_edited_time": "2026-04-10T19:24:00.000Z",
+    "created_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "last_edited_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "has_children": false,
+    "in_trash": false,
+    "type": "numbered_list_item",
+    "numbered_list_item": {
+     "rich_text": [
+      {
+       "type": "text",
+       "text": {
+        "content": "Synthetic bravo ember harbor juniper island harbor line.",
+        "link": null
+       },
+       "annotations": {
+        "bold": true,
+        "italic": false,
+        "strikethrough": false,
+        "underline": false,
+        "code": false,
+        "color": "default"
+       },
+       "plain_text": "Synthetic bravo ember harbor juniper island harbor line.",
+       "href": null
+      },
+      {
+       "type": "text",
+       "text": {
+        "content": "Synthetic ember delta cedar cedar juniper bravo line.",
+        "link": null
+       },
+       "annotations": {
+        "bold": false,
+        "italic": false,
+        "strikethrough": false,
+        "underline": false,
+        "code": false,
+        "color": "default"
+       },
+       "plain_text": "Synthetic ember delta cedar cedar juniper bravo line.",
+       "href": null
+      }
+     ],
+     "color": "default"
+    }
+   }
+  ],
+  "00000000-0000-0000-0000-00000000f0ce": [
+   {
+    "object": "block",
+    "id": "00000000-0000-0000-0000-00000000e24f",
+    "parent": {
+     "type": "block_id",
+     "block_id": "00000000-0000-0000-0000-00000000f0ce"
+    },
+    "created_time": "2026-04-10T19:30:00.000Z",
+    "last_edited_time": "2026-04-10T19:31:00.000Z",
+    "created_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "last_edited_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "has_children": false,
+    "in_trash": false,
+    "type": "paragraph",
+    "paragraph": {
+     "rich_text": [
+      {
+       "type": "text",
+       "text": {
+        "content": "Synthetic bravo bravo ember delta ember alpha line.",
+        "link": null
+       },
+       "annotations": {
+        "bold": false,
+        "italic": false,
+        "strikethrough": false,
+        "underline": false,
+        "code": false,
+        "color": "default"
+       },
+       "plain_text": "Synthetic bravo bravo ember delta ember alpha line.",
+       "href": null
+      }
+     ],
+     "icon": null,
+     "color": "default"
+    }
+   },
+   {
+    "object": "block",
+    "id": "00000000-0000-0000-0000-00000000d8ac",
+    "parent": {
+     "type": "block_id",
+     "block_id": "00000000-0000-0000-0000-00000000f0ce"
+    },
+    "created_time": "2026-04-10T19:31:00.000Z",
+    "last_edited_time": "2026-04-10T19:31:00.000Z",
+    "created_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "last_edited_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "has_children": false,
+    "in_trash": false,
+    "type": "paragraph",
+    "paragraph": {
+     "rich_text": [
+      {
+       "type": "text",
+       "text": {
+        "content": "Synthetic bravo delta ember alpha bravo alpha line.",
+        "link": null
+       },
+       "annotations": {
+        "bold": false,
+        "italic": false,
+        "strikethrough": false,
+        "underline": false,
+        "code": false,
+        "color": "default"
+       },
+       "plain_text": "Synthetic bravo delta ember alpha bravo alpha line.",
+       "href": null
+      }
+     ],
+     "icon": null,
+     "color": "default"
+    }
+   },
+   {
+    "object": "block",
+    "id": "00000000-0000-0000-0000-0000000046d2",
+    "parent": {
+     "type": "block_id",
+     "block_id": "00000000-0000-0000-0000-00000000f0ce"
+    },
+    "created_time": "2026-04-10T19:31:00.000Z",
+    "last_edited_time": "2026-04-10T19:31:00.000Z",
+    "created_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "last_edited_by": {
+     "object": "user",
+     "id": "00000000-0000-0000-0000-000000003739"
+    },
+    "has_children": false,
+    "in_trash": false,
+    "type": "paragraph",
+    "paragraph": {
+     "rich_text": [
+      {
+       "type": "text",
+       "text": {
+        "content": "Synthetic fjord delta delta harbor grove ember line.",
+        "link": null
+       },
+       "annotations": {
+        "bold": false,
+        "italic": false,
+        "strikethrough": false,
+        "underline": false,
+        "code": false,
+        "color": "default"
+       },
+       "plain_text": "Synthetic fjord delta delta harbor grove ember line.",
+       "href": null
+      }
+     ],
+     "icon": null,
+     "color": "default"
+    }
+   }
+  ]
+ }
+}

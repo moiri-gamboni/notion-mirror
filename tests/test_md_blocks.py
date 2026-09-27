@@ -739,6 +739,9 @@ class RendererRoundTripTestCase(unittest.TestCase):
         # unsentinelled one refuses instead of coming back as a paragraph
         "breadcrumb": "a table-of-contents stand-in carrying no sentinel",
         "template": "a template stand-in carrying no sentinel",
+        # its content is Notion's AI output and the tabs are not blocks of the page:
+        # only tasksync's keep region can carry it back
+        "meeting_notes": "an AI meeting-notes stand-in carrying no sentinel",
     }
     # measured losses in the round trip, each with the reason it cannot be helped here
     LOSSES = {

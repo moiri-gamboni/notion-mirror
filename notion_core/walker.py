@@ -54,6 +54,7 @@ class Walker:
         self._req_start = api.n
         self.nblocks = 0
         self.block_anchors = []  # (block_id, anchor[:90]) in walk order
+        self._quiet = False      # rendering a transcript: its lines are not listed for comments
         self.attachments = []    # (block_id, kind, url, caption)
         self.child_pages = []    # (id32, title)
         self.child_dbs = []      # (id32, title)
@@ -153,7 +154,7 @@ class Walker:
             data.get("title") if t in ("child_page", "child_database") else "") or f"({t})"
         # a child_page block's id is the child page's, so listing its comments reads
         # the child's page-level discussions: the child's own, mirrored with it
-        if t != "child_page":
+        if t != "child_page" and not self._quiet:
             self.block_anchors.append((b["id"], anchor[:90]))
 
         if t == "child_page":
@@ -167,6 +168,9 @@ class Walker:
             title = data.get("title", "untitled")
             self.child_dbs.append((did, title))
             lines.append(f"{p}- 🗄️ **{title}** — database `{did}` (rows in workspace/_databases/)")
+            return
+        if t in ("meeting_notes", "transcription"):  # the name before 2026-03-11
+            self.render_meeting_notes(b, data, lines, indent)
             return
 
         if t == "paragraph":
@@ -327,6 +331,52 @@ class Walker:
                 nest = indent + 1
             self.walk(b["id"], lines, nest)
 
+    def render_meeting_notes(self, b, data, lines, indent):
+        """An AI meeting-notes block: a header line, then each of its tabs under a
+        label. The block's children are three empty paragraphs standing for the
+        Summary, Notes and Transcript tabs; `children` names them, so each tab's
+        content is read directly. A transcript's lines are not listed for
+        comments (hundreds of paragraphs, a request each on every scan).
+
+        Everything sits at the block's own depth, not under it: tasksync keeps the
+        block as a region on push, and an indented line in a kept region reads as
+        a block nested in one the push rewrites, which it refuses."""
+        p = "  " * indent
+        # the title in plain text: it is often bold already, and bold inside the
+        # header's own bold breaks both
+        head = f"{p}- 🎙️ **AI meeting notes: {plain(data.get('title')).strip() or 'untitled'}**"
+        ev, rec = data.get("calendar_event") or {}, data.get("recording") or {}
+        when = _span(ev.get("start_time"), ev.get("end_time")) \
+            or _span(rec.get("start_time"), rec.get("end_time"))
+        if when:
+            head += f" — {when}"
+        who = [self.users.name({"id": u}) for u in ev.get("attendees") or []]
+        if who:
+            head += " · " + ", ".join(who)
+        status = data.get("status")
+        if status and status != "notes_ready":
+            head += f" ({status.replace('_', ' ')})"
+        lines.append(head)
+        tabs = data.get("children") or {}
+        if not tabs:
+            if b.get("has_children"):
+                self.walk(b["id"], lines, indent)
+            return
+        for key, label in (("summary_block_id", "Summary"), ("notes_block_id", "Notes"),
+                           ("transcript_block_id", "Transcript")):
+            if not tabs.get(key):
+                continue
+            # a blank line before each label, so no markdown reader takes it as
+            # the continuation of the list item or paragraph above it
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.append(f"{p}**{label}**")
+            self._quiet = key == "transcript_block_id"
+            try:
+                self.walk(tabs[key], lines, indent)
+            finally:
+                self._quiet = False
+
     def render_table(self, b, lines, indent):
         p = "  " * indent
         if lines and lines[-1].lstrip().startswith("|"):
@@ -349,3 +399,14 @@ class Walker:
         lines.append(p + "| " + " | ".join(["---"] * ncol) + " |")
         for r in rows[1:]:
             lines.append(p + fmt(r))
+
+
+def _span(start, end):
+    """"2026-04-10 15:30–16:00 (-04:00)" from two ISO times; "" without a start."""
+    if not start:
+        return ""
+    out = f"{start[:10]} {start[11:16]}"
+    if end:
+        out += "–" + (end[11:16] if end[:10] == start[:10] else f"{end[:10]} {end[11:16]}")
+    tz = start[23:] if len(start) > 23 else ""
+    return out + (f" ({tz})" if tz else "")

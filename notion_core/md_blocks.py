@@ -534,7 +534,7 @@ DIAGNOSTICS = {  # the mirror's own notes to the reader, not page content
         "the mirror's diagnostic for a block type it does not render (walker.py:203)",
 }
 # Stand-in lines. The fuller catalogue of historical mirror forms is in coverage_census.py.
-STANDIN = re.compile(r"^- [📄🗄🔗🔖🖼👁📑🧩]️?(?: |$)")   # an untitled page renders as `- 📄 `
+STANDIN = re.compile(r"^- [📄🗄🔗🔖🖼👁📑🧩🎙]️?(?: |$)")   # an untitled page renders as `- 📄 `
 #: The three url-only blocks, as `walker.URL_BLOCK_MARK` writes them: a marker saying
 #: which of the three, then the caption if it has one and the URL if it does not. The
 #: two halves are one definition — a marker added there and not here is a page that

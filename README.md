@@ -237,6 +237,7 @@ Markdown has no spelling for most of what Notion holds, so the renderer marks th
 | `- 👁️` | link preview | `- 👁️ [url](url)` |
 | `- 📑` | table of contents | `- 📑 (table of contents)` |
 | `- 🧩` | template | `- 🧩 (template: …)` |
+| `- 🎙️` | AI meeting notes | `- 🎙️ **AI meeting notes: Title** — date start–end (tz) · attendees`, then `**Summary**`, `**Notes**` and `**Transcript**`, each followed by that tab's content at the block's own depth |
 
 A bare `[url](url)` in the mirror is prose, not a block. Media keeps its own spelling (`![caption](url)` external, `![caption](ATTACH:<id32>)` Notion-hosted). A code block's caption renders as an italic line under the fence, the one rendering a reader cannot tell from ordinary text.
 
