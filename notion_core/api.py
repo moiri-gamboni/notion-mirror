@@ -21,12 +21,10 @@ from .util import log
 
 
 API = "https://api.notion.com/v1"
-VER = "2022-06-28"
-VER_DS = "2025-09-03"
-# The newest version (checked 2026-09-26). The mirror engine and the webhook
-# receiver run on it; `Api`'s default stays VER, which is what tasksync, a
-# caller outside this repository, still speaks.
+# The newest Notion-Version (checked 2026-09-26), and the default for every
+# caller: the mirror engine, the webhook receiver and tasksync all speak it.
 VER_LATEST = "2026-03-11"
+VER = VER_LATEST
 
 
 class Budget(Exception):

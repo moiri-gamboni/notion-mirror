@@ -63,7 +63,7 @@ import coverage_census
 # sibling script and every test reads them off `refresh.`, and because the tests patch
 # some of them (`refresh.Api`, `refresh.expand_truncated_props`) as module globals,
 # which only works while the name is a global of this module.
-from notion_core.api import (API, VER, VER_DS, VER_LATEST, Api, ApiError, Budget,  # noqa: F401
+from notion_core.api import (API, VER, VER_LATEST, Api, ApiError, Budget,  # noqa: F401
                              Truncated)
 from notion_core.flatten import (PAGINATED_PROP_TYPES, cell, expand_truncated_props,  # noqa: F401
                                  fmt_date, fmt_num, md_cell)
