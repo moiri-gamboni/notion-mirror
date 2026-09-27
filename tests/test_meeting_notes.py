@@ -46,7 +46,7 @@ class Users:
 
 class Api:
     def __init__(self, top):
-        self.kids = {"page": top, MB: [para("t1", ""), para("t2", ""), para("t3", "")],
+        self.kids = {"page": top, MB: [para(SUM, "", True), para(NOTES, "", True), para(TR, "", True)],
                      SUM: [{"id": "s1", "type": "heading_3", "has_children": False, "heading_3": {"rich_text": [
                          {"type": "text", "text": {"content": "Action Items"}, "plain_text": "Action Items",
                           "annotations": {}}]}}, para("s2", "Mackenzie to draft the form")],
@@ -90,9 +90,9 @@ class MeetingNotes(unittest.TestCase):
             "Good afternoon.",
         ])
 
-    def test_the_tabs_are_read_directly_not_through_the_empty_paragraphs(self):
+    def test_the_tabs_are_labelled_by_the_ids_the_block_names(self):
         _l, _w, api = render([meeting()])
-        self.assertEqual(api.paths, [f"/blocks/{x}/children" for x in ("page", SUM, NOTES, TR)])
+        self.assertEqual(api.paths, [f"/blocks/{x}/children" for x in ("page", MB, SUM, NOTES, TR)])
 
     def test_the_old_type_name_renders_the_same(self):
         self.assertEqual(render([meeting("transcription")])[0], render([meeting()])[0])
@@ -109,10 +109,24 @@ class MeetingNotes(unittest.TestCase):
         self.assertNotIn("r1", anchors)
         self.assertNotIn("r2", anchors)
 
-    def test_without_tab_ids_the_children_are_walked_as_before(self):
-        lines, _w, api = render([meeting(tabs=False)])
-        self.assertTrue(lines[0].startswith("- 🎙️ **AI meeting notes: Quinn and Mackenzie**"))
-        self.assertIn(f"/blocks/{MB}/children", api.paths)
+    def test_a_tab_the_block_does_not_name_is_kept_under_its_own_label(self):
+        """A block can hold a fourth child (an earlier summary) that `children`
+        no longer names; its content stays in the mirror."""
+        api = Api([meeting()])
+        api.kids[MB].insert(1, para("b4" * 16, "", True))
+        api.kids["b4" * 16] = [para("o1", "An earlier summary")]
+        w = Walker(api, Users())
+        lines = []
+        w.walk("page", lines, 0)
+        i = lines.index("**Other tab**")
+        self.assertLess(lines.index("**Summary**"), i)
+        self.assertLess(i, lines.index("**Notes**"))
+        self.assertIn("An earlier summary", lines)
+
+    def test_without_tab_ids_every_child_is_still_rendered(self):
+        lines, _w, _api = render([meeting(tabs=False)])
+        self.assertEqual(lines.count("**Other tab**"), 3)
+        self.assertIn("Hello there.", lines)
 
 
 if __name__ == "__main__":

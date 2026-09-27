@@ -357,23 +357,30 @@ class Walker:
         if status and status != "notes_ready":
             head += f" ({status.replace('_', ' ')})"
         lines.append(head)
-        tabs = data.get("children") or {}
-        if not tabs:
-            if b.get("has_children"):
-                self.walk(b["id"], lines, indent)
+        if not b.get("has_children"):
             return
-        for key, label in (("summary_block_id", "Summary"), ("notes_block_id", "Notes"),
-                           ("transcript_block_id", "Transcript")):
-            if not tabs.get(key):
-                continue
+        names = {undash(v): k for k, v in (data.get("children") or {}).items() if v}
+        label = {"summary_block_id": "Summary", "notes_block_id": "Notes",
+                 "transcript_block_id": "Transcript"}
+        try:
+            tabs = list(self.api.paginate("GET", f"/blocks/{b['id']}/children"))
+        except ApiError as e:
+            self.partial = True
+            lines.append(f"{p}<!-- child blocks inaccessible here: HTTP {e.code} -->")
+            return
+        # every child, in Notion's order: `children` names the current three, and a
+        # block can hold another (an earlier summary) that the mirror keeps too
+        for tab in tabs:
+            key = names.get(undash(tab["id"]))
             # a blank line before each label, so no markdown reader takes it as
             # the continuation of the list item or paragraph above it
             if lines and lines[-1].strip():
                 lines.append("")
-            lines.append(f"{p}**{label}**")
+            lines.append(f"{p}**{label.get(key, 'Other tab')}**")
             self._quiet = key == "transcript_block_id"
             try:
-                self.walk(tabs[key], lines, indent)
+                if tab.get("has_children"):
+                    self.walk(tab["id"], lines, indent)
             finally:
                 self._quiet = False
 
