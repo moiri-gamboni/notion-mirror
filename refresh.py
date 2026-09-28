@@ -899,7 +899,9 @@ def refresh_db(api, users, db_id, dirname, state, report, args, discovered):
             if need_probe and probe_mode == "enriched":
                 old_md = md_idx.get(rid)
                 enr = existing_enrichment(os.path.join(dirpath, old_md)) if old_md else None
-                if not (enr and enr.strip()):
+                # the one edit the policy must not skip: a body written into a row
+                # whose file holds none, which the receiver logs as content_updated
+                if not (enr and enr.strip()) and content_edits().get(rid, "") <= (prev_le or ""):
                     probes_skipped += 1
                     need_probe = False
             upsert_row_md(api, users, page, db_id, title, cols, dirpath, need_probe, state, report, args,
@@ -1745,6 +1747,36 @@ def fold_bullets(stored, caps, last_scan, users, row_format, deletions, today):
             out[i] = annotate_resolved(b, day)
             deleted += 1
     return out, {"added": added, "updated": updated, "deleted": deleted}
+
+
+_CONTENT_EDITS = None
+
+
+def content_edits():
+    """page id32 -> timestamp of its latest `page.content_updated` event, over every
+    retained segment of the receiver's event log. Loaded once per run."""
+    global _CONTENT_EDITS
+    if _CONTENT_EDITS is not None:
+        return _CONTENT_EDITS
+    base = os.path.join(STATE, "webhook-events.jsonl")
+    out = {}
+    for path in [f"{base}.{i}" for i in (3, 2, 1)] + [base]:
+        if not os.path.exists(path):
+            continue
+        with open(path, errors="replace") as f:
+            for ln in f:
+                if '"page.content_updated"' not in ln:
+                    continue
+                try:
+                    e = json.loads(ln)
+                except json.JSONDecodeError:
+                    continue
+                pid = undash(((e.get("entity") or {}).get("id")) or "")
+                ts = e.get("timestamp") or ""
+                if e.get("type") == "page.content_updated" and pid and ts > out.get(pid, ""):
+                    out[pid] = ts
+    _CONTENT_EDITS = out
+    return out
 
 
 def webhook_deletions():
