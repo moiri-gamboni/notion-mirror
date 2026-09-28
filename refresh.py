@@ -1807,7 +1807,7 @@ def fold_captures(users, state, report, args):
         return
     today = dt.datetime.now(UTC).strftime("%Y-%m-%d")
     stats = {"captures": sum(len(v) for v in caps.values()), "pages": 0, "rows": 0,
-             "added": 0, "updated": 0, "deleted": 0, "unplaced": 0}
+             "added": 0, "updated": 0, "deleted": 0, "unplaced": 0, "held_elsewhere": 0}
     by_cid_page = collections.defaultdict(dict)  # page -> {cid: date} for deletions
     meta, _order = load_meta_jsonl()
     _head, sections, _app = load_comments_md()
@@ -1829,9 +1829,25 @@ def fold_captures(users, state, report, args):
             by_cid_page[pid][cid] = day
             pages.add(pid)
 
+    # A comment has one home. A capture may name the wrong object: the resolved-comment
+    # backfill filed a child page's comments under the parent page whose scan listed
+    # them, and folding it would put back every copy the dedup pass removed.
+    held = comment_homes()
+    claim = {}  # a comment not yet on disk goes where its live capture says, if it has one
+    for pid, cs in caps.items():
+        for _a, c in cs:
+            cid = undash(c.get("id") or "")
+            if cid and cid not in held:
+                live = c.get("_captured_at") not in ("", "backfill")
+                if cid not in claim or (live and not claim[cid][1]):
+                    claim[cid] = (pid, live)
+    held.update({cid: v[0] for cid, v in claim.items()})
     page_updates = {}
     for pid in sorted(p for p in pages if p):
         pc, dels = caps.get(pid, []), by_cid_page.get(pid, {})
+        keep = [(a, c) for a, c in pc if held.get(undash(c.get("id") or ""), pid) == pid]
+        stats["held_elsewhere"] += len(pc) - len(keep)
+        pc = keep
         if pid in rows:
             dirname, fname = rows[pid]
             path = os.path.join(DBS, dirname, fname)
@@ -1875,7 +1891,8 @@ def fold_captures(users, state, report, args):
     report["comments"]["retained"] += stats["deleted"]
     log(f"webhook fold: {stats['added']} added, {stats['updated']} updated, "
         f"{stats['deleted']} deleted across {stats['pages']} page(s) and {stats['rows']} row(s) "
-        f"({stats['captures']} captured comments, {stats['unplaced']} on pages not mirrored yet)")
+        f"({stats['captures']} captured comments, {stats['unplaced']} on pages not mirrored yet, "
+        f"{stats['held_elsewhere']} already held by another page or row)")
 
 
 # ------------------------------------------- comment-contamination assert (A4)
@@ -1947,6 +1964,26 @@ def comment_text_key(bullet):
     # keeping the author prefix can only make a false positive less likely.
     key = " ".join((b[m.end():] if m else b).split())
     return "" if not _NO_CONTENT.sub("", key) else key
+
+
+def comment_homes():
+    """comment id -> the one object (page section or row file) that holds it."""
+    out = {}
+    for s in load_comments_md()[1]:
+        for b in split_bullets(s["body"]):
+            if bullet_cid(b):
+                out.setdefault(bullet_cid(b), s["id"])
+    for rid, (d, f) in row_md_global_index().items():
+        try:
+            txt = open(os.path.join(DBS, d, f)).read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if MARKER not in txt or COMMENTS_OPEN not in txt and "\n## Comments" not in txt:
+            continue
+        for b in split_bullets(stored_comments_body(txt.split(MARKER, 1)[1]), prefix="- _"):
+            if bullet_cid(b):
+                out.setdefault(bullet_cid(b), rid)
+    return out
 
 
 def build_comment_index():

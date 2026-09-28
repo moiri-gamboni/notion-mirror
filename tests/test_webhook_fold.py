@@ -175,6 +175,27 @@ class FoldCaptures(MirrorSandbox):
         self.assertIn(ROW, self.st["comment_rows"], "a newly commented row joins the audit pool")
         self.assertEqual(self.report["comments"]["folded"]["added"], 2)
 
+    def test_a_comment_already_held_by_another_object_is_not_folded_in_again(self):
+        """A backfill record filed a child page's comment under its parent; the
+        comment lives with the child, and the fold must not copy it back."""
+        self.capture_log((PAGE, [self.raw(C2, "on the child page")], AFTER))
+        self.run_fold()
+        self.capture_log((PAGE, [self.raw(C2, "on the child page")], AFTER),
+                         (ROW, [self.raw(C2, "on the child page")], "backfill"))
+        self.report = refresh.new_report("daily")
+        self.run_fold()
+        body = refresh.extract_comments_body(self.read(self.row_path).split(refresh.MARKER, 1)[1])
+        self.assertNotIn("on the child page", body)
+        self.assertEqual(self.report["comments"]["folded"]["held_elsewhere"], 1)
+
+    def test_a_new_comment_goes_where_its_live_capture_says(self):
+        self.capture_log((ROW, [self.raw(C2, "misfiled by a backfill")], "backfill"),
+                         (PAGE, [self.raw(C2, "misfiled by a backfill")], AFTER))
+        self.run_fold()
+        body = refresh.extract_comments_body(self.read(self.row_path).split(refresh.MARKER, 1)[1])
+        self.assertNotIn("misfiled", body)
+        self.assertIn("misfiled", self.read(os.path.join(self.ws, "_comments.md")))
+
     def test_the_latest_capture_of_an_edited_comment_wins(self):
         self.capture_log((ROW, [self.raw(C1, "draft")], BEFORE),
                          (ROW, [self.raw(C1, "final")], AFTER))
