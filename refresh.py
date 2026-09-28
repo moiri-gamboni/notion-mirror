@@ -3227,6 +3227,88 @@ def phase_comment_dedup(api, state, report, args, meta_titles=None):
         f"{st['sections_changed']} sections and {st['rows_changed']} rows rewritten")
 
 
+def phase_row_page_dedup(report, args):
+    """--mode row-page-dedup, once: a database row is mirrored as its row file only.
+
+    A workspace export, and a one-off re-capture after it, also wrote a page file in
+    the page tree for many database rows: the row's properties as `Key: value` lines
+    and a body snapshot, never updated since, because the content phase walks content
+    pages only (a row's metadata is all it refreshes). Such a page file goes once its
+    row file carries the probe marker, so the row's body has been read into it; a
+    row never probed keeps its page file and is listed. Markdown links elsewhere in
+    the mirror that led to a removed file lead to its row file instead, and folders
+    the removal leaves empty go too. No requests."""
+    meta, _order = load_meta_jsonl()
+    rows = row_md_global_index()
+    st = {"page_files": 0, "removed": 0, "kept_unprobed": [], "links_rewritten": 0,
+          "files_relinked": 0, "folders_removed": 0}
+    doomed = {}   # abs page path -> abs row path
+    for root, dirs, files in os.walk(WS):
+        if os.path.abspath(root) == os.path.abspath(DBS):
+            dirs[:] = []
+            continue
+        for f in files:
+            m = ID32.search(f) if f.endswith(".md") else None
+            if not m or (meta.get(m.group(1)) or {}).get("parent_type") != "database_id" \
+                    or m.group(1) not in rows:
+                continue
+            st["page_files"] += 1
+            rpath = os.path.join(DBS, *rows[m.group(1)])
+            try:
+                probed = MARKER in open(rpath).read()
+            except OSError:
+                probed = False
+            if not probed:
+                st["kept_unprobed"].append(m.group(1))
+                continue
+            doomed[os.path.abspath(os.path.join(root, f))] = os.path.abspath(rpath)
+    by_id = {ID32.search(os.path.basename(pth)).group(1): r for pth, r in doomed.items()}
+    link = re.compile(r"\]\(([^)\s]*?([0-9a-f]{32})\.md)\)")
+    for root, _dirs, files in os.walk(WS):
+        for f in files:
+            path = os.path.abspath(os.path.join(root, f))
+            if not f.endswith(".md") or path in doomed:
+                continue
+            try:
+                txt = open(path).read()
+            except (OSError, UnicodeDecodeError):
+                continue
+            n = 0
+
+            def relink(mm, here=os.path.dirname(path)):
+                nonlocal n
+                target = by_id.get(mm.group(2))
+                if not target:
+                    return mm.group(0)
+                n += 1
+                return "](" + urllib.parse.quote(os.path.relpath(target, here)) + ")"
+            new = link.sub(relink, txt)
+            if n:
+                st["links_rewritten"] += n
+                st["files_relinked"] += 1
+                if not args.dry_run:
+                    with open(path, "w") as fh:
+                        fh.write(new)
+    st["removed"] = len(doomed)
+    if not args.dry_run:
+        emptied = set()
+        for pth in doomed:
+            os.remove(pth)
+            emptied.add(os.path.dirname(pth))
+        ws = os.path.abspath(WS)
+        for d in sorted(emptied, key=len, reverse=True):
+            while d != ws and d.startswith(ws + os.sep) and os.path.isdir(d) and not os.listdir(d):
+                os.rmdir(d)
+                st["folders_removed"] += 1
+                d = os.path.dirname(d)
+        if doomed and regenerate_structure_md():
+            report["notes"].append("structure.md regenerated (tree changed)")
+    report["row_page_dedup"] = st
+    log(f"row page dedup: {st['removed']} of {st['page_files']} page files of database rows removed "
+        f"({len(st['kept_unprobed'])} kept: row never probed); {st['links_rewritten']} links in "
+        f"{st['files_relinked']} files now lead to the row file; {st['folders_removed']} empty folders removed")
+
+
 def phase_comment_audit_pages(api, users, meta, state, report, args, only_legacy=False):
     """The rolling per-block comment audit of the human content pages.
 
@@ -3892,7 +3974,8 @@ LOCK_ENV_FD = "NOTION_MIRROR_LOCK_FD"
 # refetch validate can download an attachment it finds missing, which is a fill,
 # not a rewrite), and a `--dry-run` of any mode guards every write, so neither
 # takes the lock — taking it would block a nightly for the length of a read.
-WRITE_MODES = ("daily", "full-comments", "place", "rows", "legacy-comments", "comment-dedup")
+WRITE_MODES = ("daily", "full-comments", "place", "rows", "legacy-comments", "comment-dedup",
+               "row-page-dedup")
 
 
 class MirrorLocked(Exception):
@@ -3979,7 +4062,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--mode", choices=["daily", "weekly", "monthly", "full-comments", "place",
                                        "validate", "rows", "contamination-check",
-                                       "legacy-comments", "comment-dedup"],
+                                       "legacy-comments", "comment-dedup", "row-page-dedup"],
                     default="daily",
                     help="daily = everything incremental incl. the webhook fold and the "
                          "rolling per-block comment audit; "
@@ -3991,6 +4074,8 @@ def main():
                          "an open comment with no id, so the resolution check can reach it; "
                          "comment-dedup = once, no requests: one bullet per comment, row "
                          "comments in row files; "
+                         "row-page-dedup = once, no requests: remove the page files of "
+                         "database rows whose row file is probed; "
                          "weekly/monthly are legacy aliases (daily / full-comments)")
     ap.add_argument("--rows", default="", help="--mode rows: page ids, comma- or space-separated")
     ap.add_argument("--rps", type=float, default=3.0)  # Notion's ~3 req/s per-token cap
@@ -4110,6 +4195,8 @@ def main():
                       state, report, args, only_legacy=True)
             run_phase("audit-rows", phase_comment_audit_rows, api, users, state, report, args,
                       discovered, only_legacy=True)
+        elif args.mode == "row-page-dedup":
+            run_phase("row-page-dedup", phase_row_page_dedup, report, args)
         elif args.mode == "comment-dedup":
             run_phase("comment-dedup", phase_comment_dedup, api, state, report, args,
                       {i: m.get("title") or "" for i, m in load_meta_jsonl()[0].items()})
@@ -4224,6 +4311,7 @@ def main():
                        or (report["comments"].get("dedup") or {}).get("rows_changed")
                        or (report["comments"].get("dedup") or {}).get("sections_changed")
                        or (report["comments"].get("dedup") or {}).get("sections_moved")
+                       or (report.get("row_page_dedup") or {}).get("removed")
                        or report.get("rows", {}).get("refreshed")
                        or report.get("props_probe", {}).get("drained"))
     print(json.dumps({"changes": has_changes, "requests": api.n}))

@@ -534,6 +534,8 @@ np_, cp = len(p["new"]), len(p["changed"])
 if np_ or cp: bits.append(f"{cp} pages changed, {np_} new")
 if p["deleted"]: bits.append(f"{len(p['deleted'])} pages deleted")
 if c.get("added") or c.get("retained"): bits.append(f"comments +{c.get('added',0)}/~{c.get('retained',0)} resolved-kept")
+rp = r.get("row_page_dedup") or {}
+if rp: bits.append(f"row page files removed: {rp.get('removed',0)} (links repointed: {rp.get('links_rewritten',0)})")
 dd = c.get("dedup") or {}
 if dd: bits.append(f"comments deduplicated: {dd.get('sections_moved',0)} row sections moved to their rows, "
                    f"-{dd.get('repeats_dropped',0)} repeated ids, -{dd.get('legacy_dropped',0)} id-less copies, "
