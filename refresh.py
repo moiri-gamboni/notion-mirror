@@ -3296,6 +3296,31 @@ def phase_comment_dedup(api, state, report, args, meta_titles=None):
         f"{st['sections_changed']} sections and {st['rows_changed']} rows rewritten")
 
 
+_EXPORT_PROP = re.compile(r"^([^\s:|<>\-*`!\[][^:\n]{0,80}): (.*)$")
+
+
+def export_props_missing(page_txt, row_txt):
+    """The properties an export-era page file lists (its `Key: value` block under the
+    title) with a value the row file does not carry: a relation or rollup into a
+    database not shared with the integration, which the API leaves out, or a
+    property removed since the export. The page file is the only copy of those."""
+    lines = page_txt.split("\n")[1:]
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    have = {m.group(1).strip() for m in re.finditer(r"^\| (.+?) \| .* \|$", row_txt, re.M)}
+    words = set(re.findall(r"[a-z0-9]+", row_txt.lower()))
+    out = set()
+    while i < len(lines) and _EXPORT_PROP.match(lines[i]):
+        key, val = _EXPORT_PROP.match(lines[i]).groups()
+        key = key.strip().lstrip("# ")
+        said = re.findall(r"[a-z0-9]+", f"{key} {val}".lower())
+        if val.strip() and key not in have and not all(w in words for w in said):
+            out.add(key)
+        i += 1
+    return out
+
+
 def phase_row_page_dedup(report, args):
     """--mode row-page-dedup, once: a database row is mirrored as its row file only.
 
@@ -3304,13 +3329,14 @@ def phase_row_page_dedup(report, args):
     and a body snapshot, never updated since, because the content phase walks content
     pages only (a row's metadata is all it refreshes). Such a page file goes once its
     row file carries the probe marker, so the row's body has been read into it; a
-    row never probed keeps its page file and is listed. Markdown links elsewhere in
+    row never probed keeps its page file and is listed, and so does a page file that
+    holds a property value the row file lacks (`export_props_missing`). Markdown links elsewhere in
     the mirror that led to a removed file lead to its row file instead, and folders
     the removal leaves empty go too. No requests."""
     meta, _order = load_meta_jsonl()
     rows = row_md_global_index()
-    st = {"page_files": 0, "removed": 0, "kept_unprobed": [], "links_rewritten": 0,
-          "files_relinked": 0, "folders_removed": 0}
+    st = {"page_files": 0, "removed": 0, "kept_unprobed": [], "kept_unique": {},
+          "links_rewritten": 0, "files_relinked": 0, "folders_removed": 0}
     doomed = {}   # abs page path -> abs row path
     for root, dirs, files in os.walk(WS):
         if os.path.abspath(root) == os.path.abspath(DBS):
@@ -3324,11 +3350,15 @@ def phase_row_page_dedup(report, args):
             st["page_files"] += 1
             rpath = os.path.join(DBS, *rows[m.group(1)])
             try:
-                probed = MARKER in open(rpath).read()
+                rtxt = open(rpath).read()
             except OSError:
-                probed = False
-            if not probed:
+                rtxt = ""
+            if MARKER not in rtxt:
                 st["kept_unprobed"].append(m.group(1))
+                continue
+            only_here = export_props_missing(open(os.path.join(root, f), errors="replace").read(), rtxt)
+            if only_here:
+                st["kept_unique"][m.group(1)] = sorted(only_here)
                 continue
             doomed[os.path.abspath(os.path.join(root, f))] = os.path.abspath(rpath)
     by_id = {ID32.search(os.path.basename(pth)).group(1): r for pth, r in doomed.items()}
@@ -3374,7 +3404,8 @@ def phase_row_page_dedup(report, args):
             report["notes"].append("structure.md regenerated (tree changed)")
     report["row_page_dedup"] = st
     log(f"row page dedup: {st['removed']} of {st['page_files']} page files of database rows removed "
-        f"({len(st['kept_unprobed'])} kept: row never probed); {st['links_rewritten']} links in "
+        f"({len(st['kept_unprobed'])} kept: row never probed; {len(st['kept_unique'])} kept: they hold "
+        f"property values the row file lacks); {st['links_rewritten']} links in "
         f"{st['files_relinked']} files now lead to the row file; {st['folders_removed']} empty folders removed")
 
 

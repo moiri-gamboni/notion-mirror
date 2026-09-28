@@ -35,7 +35,8 @@ class RowPageDedup(MirrorSandbox):
         os.makedirs(dbdir)
         self.row = os.path.join(dbdir, f"Draft the plan {ROW}.md")
         with open(self.row, "w") as f:
-            f.write("<!-- notion db row -->\n# Draft the plan\n\n| Property | Value |\n\n" + refresh.MARKER + "\n")
+            f.write("<!-- notion db row -->\n# Draft the plan\n\n| Property | Value |\n|---|---|\n"
+                    "| Status | Done |\n| Owner | Someone |\n\n" + refresh.MARKER + "\n")
         self.row2 = os.path.join(dbdir, f"Unprobed row {ROW2}.md")
         with open(self.row2, "w") as f:
             f.write("<!-- notion db row -->\n# Unprobed row\n\n| Property | Value |\n")
@@ -78,6 +79,29 @@ class RowPageDedup(MirrorSandbox):
         st = self.run_pass(dry=True)
         self.assertEqual(before, (self.read(self.dup), self.read(self.hub)))
         self.assertEqual(st["removed"], 1)
+
+    def test_a_page_file_holding_a_value_the_row_lacks_stays(self):
+        """An export lists a relation into a database the integration cannot see;
+        the API leaves that property out, so the page file is its only copy."""
+        with open(self.dup, "w") as f:
+            f.write("# Draft the plan\n\nStatus: Done\nLinked sprint: Winter Sprint (Sprints/Winter%20Sprint.md)\n")
+        st = self.run_pass()
+        self.assertTrue(os.path.exists(self.dup))
+        self.assertEqual(st["kept_unique"], {ROW: ["Linked sprint"]})
+
+    def test_the_mirrors_own_header_comment_is_not_a_property(self):
+        with open(self.dup, "w") as f:
+            f.write("# Draft the plan\n\n<!-- notion page id: x | parent: {\"type\": \"root\"} -->\n\nbody\n")
+        self.run_pass()
+        self.assertFalse(os.path.exists(self.dup))
+
+    def test_a_value_the_row_file_carries_does_not_keep_it(self):
+        with open(self.row, "a") as f:
+            f.write("\n## Body\n\nOwner: Someone\n")
+        with open(self.dup, "w") as f:
+            f.write("# Draft the plan\n\nOwner: Someone\n")
+        self.run_pass()
+        self.assertFalse(os.path.exists(self.dup))
 
     def test_a_content_page_is_never_touched(self):
         self.run_pass()
