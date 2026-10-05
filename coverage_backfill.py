@@ -402,6 +402,13 @@ def capture_database(ctx, db_id):
                                        f"a linked database view, not queryable",
                            ambiguous=False)
         raise
+    owner = refresh.source_owner(ctx.api, sources[0]["id"])
+    if owner and owner != refresh.undash(db_id):
+        # The same linked view at 2026-03-11, which answers rather than refuses:
+        # the source it lists belongs to another database (refresh.capture_new_db).
+        ctx.state["not_a_db"][db_id] = refresh.now_iso()
+        raise Excluded("not_a_db", f"coverage backfill {today()}: a linked view of {owner}",
+                       ambiguous=False)
     d.pop("request_id", None)
     title = refresh.plain(d.get("title")) or "Untitled"
     dirname = f"{refresh.sanitize(title)} {db_id}"

@@ -705,6 +705,19 @@ class Refusals(BackfillCase):
         self.assertEqual("not_a_db",
                          coverage_census.load_exclusions(self.excl_path)[DB_VIEW]["reason"])
 
+    def test_a_linked_view_that_answers_is_excluded_not_captured(self):
+        """At 2026-03-11 `/databases` answers for a linked view, listing the source
+        it shows; that source's `parent` is another database. Capturing it would
+        mirror that database's rows a second time."""
+        self.write_census([(DB_VIEW, "child_database", "A view")])
+        view = dict(db_schema(DB_VIEW, "A view"), data_sources=[{"id": refresh.dashed(DB_A)}])
+        api = FakeApi(dbs={DB_VIEW: view, DB_A: db_schema(DB_A, "Alpha")})
+        progress, tally = self.run_backfill(api)
+        self.assertEqual(1, tally["excluded"])
+        self.assertEqual("not_a_db",
+                         coverage_census.load_exclusions(self.excl_path)[DB_VIEW]["reason"])
+        self.assertFalse(any(DB_VIEW in d for d in os.listdir(refresh.DBS)))
+
     def test_any_other_400_stays_a_failure(self):
         """Only Notion's no-accessible-data-source wording is an access verdict; a
         different 400 (a malformed filter, an API change) must stay retryable."""

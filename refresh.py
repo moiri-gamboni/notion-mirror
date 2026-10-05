@@ -598,6 +598,20 @@ def catalog_source(api, db_id):
     return srcs[0] if srcs and len(srcs) == 1 else None
 
 
+def source_owner(api, ds_id):
+    """id32 of the database a data source belongs to (its `parent`), from the
+    run's catalog when it lists the source, else one GET; None when the source
+    cannot be read, which leaves the caller's own reads to give the verdict."""
+    for did, srcs in (getattr(api, "catalog", None) or {}).items():
+        if any(undash(s["id"]) == undash(ds_id) for s in srcs):
+            return did
+    try:
+        ds = api.get(f"/data_sources/{ds_id}")
+    except ApiError:
+        return None
+    return undash(((ds.get("parent") or {}).get("database_id")) or "") or None
+
+
 def query_db_rows(api, db_id):
     """All rows of a DB: every data source it holds, queried in turn (at
     2025-09-03 and later a database is a container and rows live in its data
@@ -1066,6 +1080,16 @@ def capture_new_db(api, users, db_id, state, report, args):
         return
     d.pop("request_id", None)
     title = plain(d.get("title")) or "Untitled"
+    owner = source_owner(api, sources[0]["id"])
+    if owner and owner != undash(db_id):
+        # An inline linked view: at 2026-03-11 it answers as a database of its
+        # own over another database's source (2022-06-28 refused it, which is
+        # what flagged it here before). Captured, it mirrors every row of that
+        # source a second time; the owner already holds them.
+        state["not_a_db"][db_id] = now_iso()
+        report["notes"].append(f"database '{title[:40]}' ({db_id[:8]}) is a linked view of "
+                               f"{owner[:8]} — not captured")
+        return
     dirname = f"{sanitize(title)} {db_id}"
     dirpath = os.path.join(DBS, dirname)
     try:

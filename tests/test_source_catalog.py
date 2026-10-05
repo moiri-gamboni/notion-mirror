@@ -22,6 +22,7 @@ import refresh  # noqa: E402
 DB1, DS1 = "a1" * 16, "d1000000-0000-0000-0000-000000000001"
 DB2, DS2A, DS2B = "b2" * 16, "d2000000-0000-0000-0000-00000000000a", "d2000000-0000-0000-0000-00000000000b"
 DB3, DS3 = "c3" * 16, "d3000000-0000-0000-0000-000000000003"
+VIEW = "e4" * 16   # an inline linked view of DB1: a database of its own over DS1
 PAGE = "9f" * 16
 PROPS = {"Name": {"id": "title", "name": "Name", "type": "title", "title": {}}}
 
@@ -59,6 +60,11 @@ class Api:
                     "data_sources": [{"id": DS3, "name": "Three"}]}
         if path == f"/data_sources/{DS3}":
             return source(DS3, DB3, "Three")
+        if path == f"/databases/{refresh.dashed(VIEW)}":
+            return {"object": "database", "id": refresh.dashed(VIEW), "title": [],
+                    "is_inline": True, "data_sources": [{"id": DS1, "name": "One"}]}
+        if path == f"/data_sources/{DS1}":
+            return source(DS1, DB1, "One")
         if path == f"/databases/{refresh.dashed(DB2)}":
             return {"object": "database", "id": refresh.dashed(DB2), "title": [{"plain_text": "Two"}],
                     "data_sources": [{"id": DS2A, "name": "Two A"}, {"id": DS2B, "name": "Two B"}]}
@@ -167,6 +173,54 @@ class Discovery(unittest.TestCase):
                                     types.SimpleNamespace(dry_run=False), set())
         self.assertEqual(api.calls, [("POST", "/search", "data_source")])
         self.assertEqual([c.args[2] for c in cap.call_args_list], [DB2])
+
+
+class LinkedView(unittest.TestCase):
+    """At 2026-03-11 `GET /databases/{id}` answers for an inline linked view as a
+    database of its own, listing the source it shows; 2022-06-28 refused it, and
+    discovery flagged it `not_a_db`. Captured, it mirrored every row of the
+    source a second time, under a directory of its own: on 2026-10-04 one view
+    of Tasks added 3,661 duplicate row files. The source's own `parent` names the
+    database that owns it, and only that one is mirrored."""
+
+    def setUp(self):
+        self.report = refresh.new_report("daily")
+        self.state = {"not_a_db": {}, "db404": {}, "unshared": {}}
+        self.args = types.SimpleNamespace(dry_run=False)
+        root = tempfile.mkdtemp(prefix="linked-view-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        p = mock.patch.object(refresh, "DBS", root)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def capture(self, api):
+        with mock.patch.object(refresh, "refresh_db") as rdb, \
+                mock.patch.object(refresh, "jsave") as save:
+            refresh.capture_new_db(api, None, VIEW, self.state, self.report, self.args)
+        self.assertFalse(rdb.called or save.called, "a linked view must write nothing")
+
+    def test_a_linked_view_is_flagged_not_a_db_and_not_captured(self):
+        api = Api()
+        self.capture(api)
+        self.assertIn(VIEW, self.state["not_a_db"])
+        self.assertNotIn(("POST", f"/data_sources/{DS1}/query", None), api.calls)
+        self.assertTrue(any(VIEW[:8] in n and "linked view" in n for n in self.report["notes"]))
+
+    def test_the_catalog_names_the_owner_without_a_second_source_read(self):
+        """The schema read is the source's only GET; the owner comes from the catalog."""
+        api = Api()
+        refresh.load_source_catalog(api, self.report)
+        api.calls.clear()
+        self.capture(api)
+        self.assertIn(VIEW, self.state["not_a_db"])
+        self.assertEqual(api.calls.count(("GET", f"/data_sources/{DS1}", None)), 1)
+
+    def test_a_database_that_owns_its_source_is_captured(self):
+        api = Api()
+        with mock.patch.object(refresh, "refresh_db") as rdb:
+            refresh.capture_new_db(api, None, DB3, self.state, self.report, self.args)
+        self.assertTrue(rdb.called)
+        self.assertEqual(self.state["not_a_db"], {})
 
 
 if __name__ == "__main__":
