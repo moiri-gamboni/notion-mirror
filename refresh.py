@@ -773,12 +773,20 @@ def refresh_schema_files(api, dirpath, db_id, title, nrows, report, force=False,
     return d.get("properties") or {}, live_title
 
 
+def all_schemas_section(db_id):
+    """One database's section of `_ALL-SCHEMAS.md`: its heading line through the
+    next heading. The heading is matched within its line; under re.S a bare `.*`
+    ran from the file's first heading, and every write replaced all sections
+    above the one it meant."""
+    return re.compile(r"^## [^\n]*`" + db_id + r"`.*?(?=^## |\Z)", re.M | re.S)
+
+
 def update_all_schemas(title, db_id, nrows, props, sources=None):
     path = os.path.join(DBS, "_ALL-SCHEMAS.md")
     txt = open(path).read() if os.path.exists(path) else "# All database schemas\n\n"
     body = schema_md(title, db_id, nrows, props, sources).split("\n", 2)[2]  # drop '# Schema —' header
     section = f"## {title}  `{db_id}`  ({nrows} rows, {len(props)} props)\n{body}"
-    pat = re.compile(r"^## .*`" + db_id + r"`.*?(?=^## |\Z)", re.M | re.S)
+    pat = all_schemas_section(db_id)
     if pat.search(txt):
         txt = pat.sub(lambda _m: section + "\n", txt, count=1)
     else:
@@ -1031,8 +1039,7 @@ def remove_all_schemas_section(db_id):
     if not os.path.exists(path):
         return
     txt = open(path).read()
-    pat = re.compile(r"^## .*`" + db_id + r"`.*?(?=^## |\Z)", re.M | re.S)
-    new = pat.sub("", txt, count=1)
+    new = all_schemas_section(db_id).sub("", txt, count=1)
     if new != txt:
         with open(path, "w") as f:
             f.write(new)
