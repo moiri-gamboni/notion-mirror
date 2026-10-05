@@ -1999,9 +1999,9 @@ def fold_captures(users, state, report, args):
 # because the offending text is a future, different one. The revert to 30 buys
 # detection 15 pages earlier against a mechanism that has only ever produced
 # 62-2,287, and pays for it with that false positive. If it ever fires on
-# boilerplate, raise this constant back to 45 rather than baselining the text;
-# the durable answer is keying on comment ids, which retires
-# text as the key altogether.
+# boilerplate, raise this constant back to 45 rather than baselining the text.
+# An id-bearing comment is keyed on its id (`comment_index_key`), so only
+# id-less bullets still lean on text.
 MAX_COMMENT_PAGES = 30
 CONTAMINATION_BASELINE = "comment-contamination-baseline.json"
 
@@ -2029,6 +2029,21 @@ def comment_text_key(bullet):
     return "" if not _NO_CONTENT.sub("", key) else key
 
 
+def comment_index_key(bullet):
+    """The contamination index's key for a bullet: its comment id where it has
+    one, with the text kept beside it for the message, else its text.
+
+    Text is a weak key in both directions: distinct mention-only comments
+    collapse into one, and distinct comments in the same words add up. The
+    second fired on 2026-10-05: one request posted on eight template rows, each
+    row copied into every sprint, read as one text on 37 pages. An id is one
+    comment, so a thread copied onto pages that never carried it still spreads
+    under one key, and a mention-only comment with an id needs no exclusion."""
+    cid = bullet_cid(bullet)
+    text = comment_text_key(bullet)
+    return f"{text} [{cid}]".lstrip() if cid else text
+
+
 def comment_homes():
     """comment id -> the one object (page section or row file) that holds it."""
     out = {}
@@ -2050,7 +2065,8 @@ def comment_homes():
 
 
 def build_comment_index():
-    """comment text -> {page ids carrying it}, over the whole mirror.
+    """comment id or text (`comment_index_key`) -> {page ids carrying it}, over
+    the whole mirror.
 
     Both tiers, because the incident spanned both: DB row `.md` files keyed by
     row id, and `_comments.md` sections keyed by page id. Repeats within one
@@ -2076,12 +2092,12 @@ def build_comment_index():
             if MARKER not in txt:
                 continue
             for b in split_bullets(extract_comments_body(txt.split(MARKER, 1)[1]), prefix="- _"):
-                key = comment_text_key(b)
+                key = comment_index_key(b)
                 if key:
                     idx[key].add(m.group(1))
     for s in load_comments_md()[1]:
         for b in split_bullets(s["body"]):
-            key = comment_text_key(b)
+            key = comment_index_key(b)
             if key:
                 idx[key].add(s["id"])
     return idx

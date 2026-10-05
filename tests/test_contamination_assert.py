@@ -102,6 +102,25 @@ class KeyTest(unittest.TestCase):
         self.assertEqual(refresh.comment_text_key("- _Sam (2024-01-09):_ ‣"), "")
         self.assertEqual(refresh.comment_text_key("- _Sam (2024-01-09):_ ‣ ‣"), "")
 
+    def test_an_id_bearing_bullet_keys_on_its_id(self):
+        """Two comments with the same words are two comments: keyed on text, the
+        same request posted on eight template rows, each copied into every sprint,
+        summed to one 37-page "spread" on 2026-10-05."""
+        a = "- _Sam (2024-01-09):_ please review <!-- notion:cid " + "a" * 32 + " d=" + "c" * 32 + " -->"
+        b = "- _Sam (2024-01-09):_ please review <!-- notion:cid " + "b" * 32 + " d=" + "c" * 32 + " -->"
+        self.assertNotEqual(refresh.comment_index_key(a), refresh.comment_index_key(b))
+        self.assertIn("please review", refresh.comment_index_key(a))
+
+    def test_an_id_less_bullet_keys_on_its_text(self):
+        self.assertEqual(refresh.comment_index_key("- _Sam (2024-01-09):_ moved the page"),
+                         "moved the page")
+
+    def test_a_mention_only_comment_with_an_id_keys(self):
+        """With an id there is no collapse to fear, so it counts."""
+        b = "- _Sam (2024-01-09):_ ‣ <!-- notion:cid " + "a" * 32 + " d=" + "c" * 32 + " -->"
+        self.assertTrue(refresh.comment_index_key(b))
+        self.assertEqual(refresh.comment_index_key("- _Sam (2024-01-09):_ ‣"), "")
+
     def test_a_mention_beside_real_words_still_keys(self):
         self.assertEqual(refresh.comment_text_key("- _Sam (2024-01-09):_ moved ‣ to ‣"),
                          "moved ‣ to ‣")
@@ -168,6 +187,20 @@ class IndexTest(unittest.TestCase):
     def test_missing_comments_md_is_not_an_error(self):
         self.row("Tasks aa", "1" * 32, ["- _A (2026-01-01):_ only tier"])
         self.assertEqual(refresh.build_comment_index()["only tier"], {"1" * 32})
+
+    def test_distinct_ids_with_one_text_do_not_add_up(self):
+        for i in range(40):
+            self.row("Tasks aa", f"{i:032x}",
+                     [f"- _A (2026-01-01):_ same words <!-- notion:cid {i % 8:032x} d={'c' * 32} -->"])
+        self.assertEqual(refresh.contamination_breaches(refresh.build_comment_index()), [])
+
+    def test_one_id_on_many_pages_is_caught(self):
+        """The incident's shape with ids: one thread copied onto unrelated pages."""
+        for i in range(40):
+            self.row("Tasks aa", f"{i:032x}",
+                     [f"- _A (2026-01-01):_ copied thread <!-- notion:cid {'a' * 32} d={'c' * 32} -->"])
+        breaches = refresh.contamination_breaches(refresh.build_comment_index())
+        self.assertEqual([b.pages for b in breaches], [40])
 
     def test_end_to_end_incident_shape_is_caught(self):
         """One thread on 50 unrelated content pages — the incident, in miniature."""
