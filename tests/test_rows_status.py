@@ -257,6 +257,48 @@ class NightlyDeadManTest(DeadManFixture):
         self.assertEqual(len(self.check()), 2)
 
 
+class NightlyStalenessTest(DeadManFixture):
+    def setUp(self):
+        super().setUp()
+        self.record(rows_status.OK)
+
+    def completed(self, ts):
+        with open(os.path.join(self.dir, "last-run.json"), "w") as f:
+            json.dump({"ts": ts}, f)
+
+    def test_fresh_completion_is_silent(self):
+        self.completed(self.age(24))
+        self.assertEqual(self.check(), [])
+
+    def test_old_completion_alarms_for_offset_and_z(self):
+        for ts in (self.age(37), self.age(37).replace("+00:00", "Z")):
+            with self.subTest(ts=ts):
+                self.completed(ts)
+                self.assertEqual(self.check(), [
+                    f"notion mirror: no completed nightly refresh since {ts} (threshold 36h)"])
+
+    def test_unreadable_completion_is_silent(self):
+        self.assertEqual(self.check(), [])
+        for value in ("{bad", "[]", '{"ts": "bad"}', '{"ts": null}'):
+            with self.subTest(value=value):
+                with open(os.path.join(self.dir, "last-run.json"), "w") as f:
+                    f.write(value)
+                self.assertEqual(self.check(), [])
+
+    def test_dead_nightly_suppresses_staleness(self):
+        self.completed(self.age(37))
+        with open(os.path.join(self.dir, "refresh-run.json"), "w") as f:
+            json.dump(dict(mode="daily", status="running", pid=123,
+                           started=self.age(1)), f)
+        proc = os.path.join(self.dir, "proc")
+        os.mkdir(proc)
+        alarms = self.check(proc_root=proc)
+        self.assertEqual(len(alarms), 1)
+        self.assertIn("died before committing", alarms[0])
+        self.assertIn("under its usual launcher", alarms[0])
+        self.assertNotIn("systemctl", alarms[0])
+
+
 class CliTest(MarkerTestCase):
     def run_cli(self, *argv):
         return rows_status.main([*argv, "--state-dir", self.dir])

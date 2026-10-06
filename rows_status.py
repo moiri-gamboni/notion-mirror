@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Hourly freshness and dead nightly refresh alarms.
 
-The rows marker lives at `_meta/state/rows-refresh-status.json`; nightly runs
-leave `refresh-run.json` until their writes are committed.
+The hourly arm reads `_meta/state/rows-refresh-status.json`. The nightly arms
+read `refresh-run.json` (written by every writing run until its work is committed;
+rows-mode markers are ignored) and `last-run.json` (the last recorded non-rows
+engine run's start timestamp). A dead nightly may have sent no ntfy: its run
+marker is the durable trace, and the clock for engine runs backstops a missing or
+overwritten marker.
 
 The hourly job never ntfys. It cannot: losing the race with the nightly is its
 designed outcome and happens 2-4 times every night by construction, so a job
@@ -56,6 +60,10 @@ import mirror_root
 # ticks every night and up to 5 on a bad one. Anything tighter alerts on the
 # system working as designed, which is how a dead-man gets muted.
 MAX_AGE_H = 6
+
+# Nightlies start about every 24h and can run up to ~4.5h. Thirty-six hours
+# clears that normal window while detecting a genuinely missed night.
+NIGHTLY_MAX_AGE_H = 36
 
 # Outcomes. `skipped` is a designed refusal (someone else holds the lock, the
 # tree is mid-edit); `failed` is something wrong. Both exit non-zero and both
@@ -163,6 +171,7 @@ def _age_hours(ts):
 
 
 def _nightly_alarm(state_dir, proc_root):
+    """Alarm on absent/non-refresh PIDs or pre-boot starts: reboot can reuse PIDs."""
     marker = _read_json(os.path.join(state_dir, "refresh-run.json"))
     mode, status = marker.get("mode"), marker.get("status")
     if mode not in ("daily", "full-comments") or status not in ("running", "crashed"):
@@ -195,15 +204,26 @@ def _nightly_alarm(state_dir, proc_root):
         return []
     return [f"notion mirror: the {mode} refresh started {marker['started']} "
             f"died before committing (marker: {status}); hourly ticks are refused "
-            "until it resumes — sudo systemctl start notion-mirror-nightly.service, "
-            "or wait for the next nightly"]
+            "until it resumes — start the nightly now (refresh.sh daily, under its usual launcher) "
+            "or wait for the next one"]
+
+
+def _nightly_staleness_alarm(state_dir):
+    """Backstop missing run markers when the recorded non-rows engine start is over 36h old."""
+    ts = _read_json(os.path.join(state_dir, "last-run.json")).get("ts")
+    age = _age_hours(ts)
+    if age is None or age < NIGHTLY_MAX_AGE_H:
+        return []
+    return [f"notion mirror: no completed nightly refresh since {ts} "
+            f"(threshold {NIGHTLY_MAX_AGE_H}h)"]
 
 
 def check(max_age_h=MAX_AGE_H, state_dir=None, *, proc_root="/proc"):
-    """The dead-man: hourly success age and dead nightly runs, empty when healthy.
+    """The dead-man: one line per alarm, empty when healthy.
 
     Called from a health check in a **different cron**, so it still runs when this
-    pipeline is wedged. It keys on the age of the last *success* and never on the last
+    pipeline is wedged. The nightly arms are described in their helpers.
+    The hourly arm keys on the age of the last *success* and never on the last
     exit status: there is no wall-clock bound on `refresh.sh`, so a hung nightly holds
     the mirror lock indefinitely and every hourly tick behind it exits non-zero from
     `flock -n`. That is not the job failing, so an alert-on-failure would stay quiet for
@@ -217,6 +237,8 @@ def check(max_age_h=MAX_AGE_H, state_dir=None, *, proc_root="/proc"):
         # traceback: a caller composing this with other checks keeps its own answers.
         return ["mirror alarms unavailable: " + str(e).split("\n")[0]]
     alarms = _nightly_alarm(state_dir, proc_root)
+    if not alarms:
+        alarms = _nightly_staleness_alarm(state_dir)
     age = _age_hours(data.get("last_success_ts"))
     if age is None:
         n = data.get("consecutive_not_ok") or 0
