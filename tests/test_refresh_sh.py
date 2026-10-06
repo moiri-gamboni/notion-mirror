@@ -324,7 +324,7 @@ class SignalTest(Sandbox):
                     args.append("--props-only")
                 proc = subprocess.Popen(args, env=env, stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT, text=True)
-                self.addCleanup(lambda: proc.poll() is None and proc.kill())
+                self.addCleanup(lambda proc=proc: proc.poll() is None and proc.kill())
                 marker = os.path.join(self.state, "refresh-run.json")
                 deadline = time.monotonic() + 5
                 while not os.path.exists(marker) and time.monotonic() < deadline:
@@ -343,6 +343,57 @@ class SignalTest(Sandbox):
                 os.unlink(marker)
                 if os.path.exists(self.call_log + ".curl"):
                     os.unlink(self.call_log + ".curl")
+
+
+    def test_term_without_marker_logs_only_before_and_after_commit(self):
+        for after_commit in (False, True):
+            with self.subTest(after_commit=after_commit):
+                shutil.copy(os.path.join(TOOLS, "tree_status.py"),
+                            os.path.join(self.tools, "tree_status.py"))
+                if after_commit:
+                    tool = "logger"
+                    write_exec(os.path.join(self.tools, "refresh.py"), STUB_REFRESH +
+                               "open(os.path.join(os.environ['NOTION_MIRROR'], 'workspace', '.keep'), 'w').write('changed')\n")
+                else:
+                    tool = "tree_status.py"
+                ready = os.path.join(self.tmp, "ready-" + str(after_commit))
+                if os.path.exists(self.call_log + ".curl"):
+                    os.unlink(self.call_log + ".curl")
+                if after_commit:
+                    write_exec(os.path.join(self.bin, tool),
+                               "#!/usr/bin/env python3\nimport os, sys, time\n"
+                               "if 'no changes — done' in sys.argv:\n"
+                               "    open(os.environ['SANDBOX_READY'], 'w').close()\n"
+                               "    time.sleep(0.8)\n")
+                else:
+                    write_exec(os.path.join(self.tools, tool),
+                               "import os, time\n"
+                               "open(os.environ['SANDBOX_READY'], 'w').close()\n"
+                               "time.sleep(0.8)\n")
+                head_before = self.git("rev-parse", "HEAD")
+                env = dict(os.environ, NOTION_MIRROR=self.mirror,
+                           NOTION_MIRROR_TOOLS=self.tools, NOTION_TOKEN="sandbox",
+                           HOME=self.home, PATH=self.bin + os.pathsep + os.environ["PATH"],
+                           SANDBOX_CALL_LOG=self.call_log, SANDBOX_READY=ready,
+                           SANDBOX_EXPECTED_TOKEN="sandbox", SANDBOX_TOKEN_LOG=self.token_log)
+                proc = subprocess.Popen(["bash", REFRESH_SH, "daily"], env=env,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        text=True)
+                self.addCleanup(lambda proc=proc: proc.poll() is None and proc.kill())
+                deadline = time.monotonic() + 5
+                while not os.path.exists(ready) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(os.path.exists(ready))
+                self.assertFalse(os.path.exists(os.path.join(self.state, "refresh-run.json")))
+                if after_commit:
+                    self.assertNotEqual(self.git("rev-parse", "HEAD"), head_before)
+                proc.send_signal(signal.SIGTERM)
+                out, _ = proc.communicate(timeout=5)
+                self.assertEqual(proc.returncode, 143, out)
+                self.assertIn("FAIL: killed by SIGTERM", out)
+                self.assertNotIn("run marker stays", out)
+                self.assertEqual(self.ntfy_attempts(), [])
+                os.unlink(ready)
 
 
 class DirtyListingTest(Sandbox):

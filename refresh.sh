@@ -22,9 +22,9 @@
 # they fired at all would be nondeterministic per tick, since has_changes counts
 # report["comments"]["retained"], which moves whenever a comment vanishes.
 # `--props-only` names no rows: the drain alone, which is what most hourly ticks
-# are. rows mode also never ntfys — every outcome goes to the status marker
+# are. rows mode also never ntfys — every outcome but a kill goes to the status marker
 # (_meta/state/rows-refresh-status.json) and a health check's dead-man ages it
-# (rows_status.py --check).
+# (rows_status.py --check); a killed tick shows through the marker's age.
 #
 # Where the mirror is: NOTION_MIRROR, in the environment or in
 # ~/.config/notion-mirror/env, resolved by mirror_root.py (which refuses a
@@ -67,16 +67,21 @@ ntfy() {
     curl -sf -m 5 -H "Title: $title" -H "Priority: $prio" "${auth[@]}" -d "$body" \
         "http://localhost:2586/claude-$(whoami)" >/dev/null || say "ntfy failed"
 }
-RUN_MARK_WRITTEN=0
+# Without a trap a signalled run leaves no log line. ntfy is best effort: shutdown
+# may already have stopped it, and SIGKILL/OOM run no trap. Leave the marker alone:
+# running/crashed lets the next nightly auto-resume, and rows_status.py --check is
+# the durable listener when no notification arrives. Bash waits for the foreground
+# child to return before trapping; a unit stop signals that child too. Ignore more
+# signals in the handler so notification/logging cannot re-enter it.
 killed() {
     local name="$1" signum="$2" detail
     trap '' TERM INT HUP
     detail="killed by SIG$name (mode=$MODE)"
-    if [ "$RUN_MARK_WRITTEN" = "1" ]; then
-        detail+="; the run marker stays as it was, so the next daily run resumes over its writes"
+    if [ -n "${RUN_MARK:-}" ] && [ -f "$RUN_MARK" ]; then
+        detail+="; the run marker stays, so the next nightly resumes over its writes"
     fi
     say "FAIL: $detail"
-    if [ "$MODE" != "rows" ]; then
+    if [ "$MODE" != "rows" ] && [ -n "${RUN_MARK:-}" ] && [ -f "$RUN_MARK" ]; then
         ntfy high "Notion mirror refresh killed" "$detail"
     fi
     exit "$((128 + signum))"
@@ -249,6 +254,8 @@ EOF
         title="Notion mirror: $summary"
         prio="default"
         grep -q "ntfy-priority: high" "$note" && prio="high"
+        # sed drains the input; head can give the writer a closed pipe (Broken pipe
+        # in the log when the unit ignores SIGPIPE).
         body="$(awk '/^## TL;DR/{f=1;next} /^## /{f=0} f && /^- /' "$note" | sed -n '1,6p')"
         [ -z "$body" ] && body="$summary"
     fi
@@ -324,6 +331,9 @@ done
 # failed commit) leaves it "running" or "crashed", and a designed refusal that
 # leaves its output for inspection (row floor, comment contamination) marks it
 # "refused". Under our own lock, any "running" marker is a dead run's.
+# rows_status.py --check reads this to alarm on a dead nightly: pid must be this
+# script's $$ (its cmdline names refresh.sh), and started must have a UTC offset.
+# A marker the reader cannot parse raises no nightly alarm.
 RUN_MARK="$STATE/refresh-run.json"
 mark_run() {
     printf '{"mode": "%s", "pid": %s, "started": "%s", "status": "%s", "reason": "%s"}\n' \
@@ -360,6 +370,8 @@ TREE_OUT="$(python3 "$TOOLS/tree_status.py" --repo "$NDIR")" \
 ENGINE_DIRTY="$(printf '%s\n' "$TREE_OUT" | awk -F'\t' '$1=="engine"{print $2}')"
 FOREIGN_DIRTY="$(printf '%s\n' "$TREE_OUT" | awk -F'\t' '$1=="foreign"{print $2}')"
 STAGED_FOREIGN="$(printf '%s\n' "$TREE_OUT" | awk -F'\t' '$1=="staged"{print $2}')"
+# sed drains all paths so the writer never hits a closed pipe (Broken pipe in
+# the log when the unit ignores SIGPIPE); head would stop after the third.
 listed() { printf '%s\n' "$1" | sed -n '1,3p' | paste -sd ',' | sed 's/,/, /g'; }
 if [ -n "$STAGED_FOREIGN" ]; then
     guard_out skipped git_busy "changes outside the engine's paths are staged ($(listed "$STAGED_FOREIGN")) — a commit in progress? A refresh commit would take them with it"
@@ -448,7 +460,7 @@ export NOTION_TOKEN
 say "refresh start: mode=$MODE"
 RPS="${NOTION_REFRESH_RPS:-3.0}"
 RUN_STARTED="$(date -u -Is)"
-mark_run running && RUN_MARK_WRITTEN=1
+mark_run running
 REPORT_JSON="$STATE/last-run-report$([ "$MODE" = "rows" ] && echo .rows).json"
 if ! OUT="$(python3 "$TOOLS/refresh.py" --mode "$MODE" --rps "$RPS" "${ROWS_ARG[@]}")"; then
     # A contamination breach (or an assert that could not run) is a designed
