@@ -191,6 +191,72 @@ class DeadManTest(DeadManFixture):
         self.assertEqual(rows_status.main(self.check_argv("--max-age-hours", "24")), 0)
 
 
+class NightlyDeadManTest(DeadManFixture):
+    def setUp(self):
+        super().setUp()
+        self.record(rows_status.OK)
+        self.proc = os.path.join(self.dir, "proc")
+        os.makedirs(os.path.join(self.proc, "123"))
+        with open(os.path.join(self.proc, "stat"), "w") as f:
+            f.write("btime 100\n")
+        self.cmdline(b"bash\0refresh.sh\0daily\0")
+
+    def cmdline(self, value):
+        with open(os.path.join(self.proc, "123", "cmdline"), "wb") as f:
+            f.write(value)
+
+    def run_marker(self, **changes):
+        data = dict(mode="daily", pid=123, started="2026-10-06T00:00:03+00:00",
+                    status="running", reason="")
+        data.update(changes)
+        with open(os.path.join(self.dir, "refresh-run.json"), "w") as f:
+            json.dump(data, f)
+
+    def check(self, **kw):
+        return super().check(proc_root=self.proc, **kw)
+
+    def test_dead_before_boot(self):
+        self.run_marker()
+        with open(os.path.join(self.proc, "stat"), "w") as f:
+            f.write("btime 2000000000\n")
+        self.assertTrue(any("died before committing" in line for line in self.check()))
+
+    def test_missing_pid(self):
+        self.run_marker(pid=456)
+        self.assertTrue(any("daily refresh started" in line for line in self.check()))
+
+    def test_reused_pid(self):
+        self.run_marker()
+        self.cmdline(b"python\0other.py\0")
+        self.assertTrue(any("marker: running" in line for line in self.check()))
+
+    def test_alive_is_silent(self):
+        self.run_marker()
+        self.assertEqual(self.check(), [])
+
+    def test_crashed_full_comments(self):
+        self.run_marker(status="crashed", mode="full-comments", pid=456)
+        self.assertTrue(any("full-comments" in line for line in self.check()))
+
+    def test_ignored_markers(self):
+        self.assertEqual(self.check(), [])
+        for changes in ({"status": "refused"}, {"mode": "rows"}, {"started": "bad"},
+                        {"pid": "bad"}):
+            with self.subTest(changes=changes):
+                marker = dict(pid=456)
+                marker.update(changes)
+                self.run_marker(**marker)
+                self.assertEqual(self.check(), [])
+        with open(os.path.join(self.dir, "refresh-run.json"), "w") as f:
+            f.write("{broken")
+        self.assertEqual(self.check(), [])
+
+    def test_both_arms_alarm(self):
+        self.run_marker(pid=456)
+        rows_status._save({"last_success_ts": self.age(7)}, self.dir)
+        self.assertEqual(len(self.check()), 2)
+
+
 class CliTest(MarkerTestCase):
     def run_cli(self, *argv):
         return rows_status.main([*argv, "--state-dir", self.dir])

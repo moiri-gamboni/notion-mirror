@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""The hourly rows job's status marker — `_meta/state/rows-refresh-status.json`.
+"""Hourly freshness and dead nightly refresh alarms.
+
+The rows marker lives at `_meta/state/rows-refresh-status.json`; nightly runs
+leave `refresh-run.json` until their writes are committed.
 
 The hourly job never ntfys. It cannot: losing the race with the nightly is its
 designed outcome and happens 2-4 times every night by construction, so a job
@@ -159,8 +162,45 @@ def _age_hours(ts):
     return (datetime.datetime.now(datetime.timezone.utc) - then).total_seconds() / 3600.0
 
 
-def check(max_age_h=MAX_AGE_H, state_dir=None):
-    """The dead-man's read side: one line per alarm, empty when healthy.
+def _nightly_alarm(state_dir, proc_root):
+    marker = _read_json(os.path.join(state_dir, "refresh-run.json"))
+    mode, status = marker.get("mode"), marker.get("status")
+    if mode not in ("daily", "full-comments") or status not in ("running", "crashed"):
+        return []
+    try:
+        started = datetime.datetime.fromisoformat(marker["started"])
+        pid = int(marker["pid"])
+        if started.tzinfo is None or pid <= 0:
+            return []
+    except (KeyError, TypeError, ValueError):
+        # Malformed run metadata cannot establish that a nightly died.
+        return []
+    before_boot = False
+    try:
+        with open(os.path.join(proc_root, "stat")) as f:
+            for line in f:
+                if line.startswith("btime "):
+                    before_boot = started.timestamp() < int(line.split()[1])
+                    break
+    except (OSError, ValueError):
+        # PID identity still detects dead runs when boot time is unavailable.
+        pass
+    try:
+        with open(os.path.join(proc_root, str(pid), "cmdline"), "rb") as f:
+            alive = b"refresh.sh" in f.read()
+    except OSError:
+        # A vanished or unreadable process cannot establish a live refresh.
+        alive = False
+    if not before_boot and alive:
+        return []
+    return [f"notion mirror: the {mode} refresh started {marker['started']} "
+            f"died before committing (marker: {status}); hourly ticks are refused "
+            "until it resumes — sudo systemctl start notion-mirror-nightly.service, "
+            "or wait for the next nightly"]
+
+
+def check(max_age_h=MAX_AGE_H, state_dir=None, *, proc_root="/proc"):
+    """The dead-man: hourly success age and dead nightly runs, empty when healthy.
 
     Called from a health check in a **different cron**, so it still runs when this
     pipeline is wedged. It keys on the age of the last *success* and never on the last
@@ -170,23 +210,25 @@ def check(max_age_h=MAX_AGE_H, state_dir=None):
     exactly as long as the outage lasted.
     """
     try:
+        state_dir = state_dir or mirror_root.state_dir()
         data = load(state_dir)
     except mirror_root.MirrorError as e:
         # An unmounted mirror volume, or nothing configured. One alarm line rather than a
         # traceback: a caller composing this with other checks keeps its own answers.
         return ["mirror alarms unavailable: " + str(e).split("\n")[0]]
+    alarms = _nightly_alarm(state_dir, proc_root)
     age = _age_hours(data.get("last_success_ts"))
     if age is None:
         n = data.get("consecutive_not_ok") or 0
-        return ["notion mirror: no successful hourly rows refresh on record"
+        return alarms + ["notion mirror: no successful hourly rows refresh on record"
                 + (f", {n} failed or skipped attempt(s) since" if n
                    else " — the job has never run")]
     if age >= max_age_h:
         last = data.get("last_attempt") or {}
         why = last.get("reason") or last.get("outcome") or "unknown"
-        return [f"notion mirror: no successful hourly rows refresh in {age:.0f}h "
+        return alarms + [f"notion mirror: no successful hourly rows refresh in {age:.0f}h "
                 f"(threshold {max_age_h}h, last attempt: {why})"]
-    return []
+    return alarms
 
 
 def main(argv=None):
