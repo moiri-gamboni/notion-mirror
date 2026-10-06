@@ -249,7 +249,7 @@ EOF
         title="Notion mirror: $summary"
         prio="default"
         grep -q "ntfy-priority: high" "$note" && prio="high"
-        body="$(awk '/^## TL;DR/{f=1;next} /^## /{f=0} f && /^- /' "$note" | head -6)"
+        body="$(awk '/^## TL;DR/{f=1;next} /^## /{f=0} f && /^- /' "$note" | sed -n '1,6p')"
         [ -z "$body" ] && body="$summary"
     fi
     ntfy "$prio" "$title" "$body
@@ -360,7 +360,7 @@ TREE_OUT="$(python3 "$TOOLS/tree_status.py" --repo "$NDIR")" \
 ENGINE_DIRTY="$(printf '%s\n' "$TREE_OUT" | awk -F'\t' '$1=="engine"{print $2}')"
 FOREIGN_DIRTY="$(printf '%s\n' "$TREE_OUT" | awk -F'\t' '$1=="foreign"{print $2}')"
 STAGED_FOREIGN="$(printf '%s\n' "$TREE_OUT" | awk -F'\t' '$1=="staged"{print $2}')"
-listed() { printf '%s\n' "$1" | head -n 3 | paste -sd ',' | sed 's/,/, /g'; }
+listed() { printf '%s\n' "$1" | sed -n '1,3p' | paste -sd ',' | sed 's/,/, /g'; }
 if [ -n "$STAGED_FOREIGN" ]; then
     guard_out skipped git_busy "changes outside the engine's paths are staged ($(listed "$STAGED_FOREIGN")) — a commit in progress? A refresh commit would take them with it"
 fi

@@ -345,5 +345,14 @@ class SignalTest(Sandbox):
                     os.unlink(self.call_log + ".curl")
 
 
+class DirtyListingTest(Sandbox):
+    def test_large_dirty_listing_has_no_broken_pipe(self):
+        write_exec(os.path.join(self.tools, "tree_status.py"),
+                   "for i in range(100000): print('engine\\tworkspace/' + str(i))\n")
+        res = self.run_refresh("unused", args=("daily",))
+        self.assertIn("workspace/0, workspace/1, workspace/2", res.stdout)
+        self.assertNotIn("Broken pipe", res.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
