@@ -275,7 +275,7 @@ class NightlyStalenessTest(DeadManFixture):
             with self.subTest(ts=ts):
                 self.completed(ts)
                 self.assertEqual(self.check(), [
-                    f"notion mirror: no completed nightly refresh since {ts} (threshold 36h)"])
+                    f"notion mirror: no nightly refresh has run since {ts} (threshold 36h)"])
 
     def test_unreadable_completion_is_silent(self):
         self.assertEqual(self.check(), [])

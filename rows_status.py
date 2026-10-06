@@ -214,7 +214,7 @@ def _nightly_staleness_alarm(state_dir):
     age = _age_hours(ts)
     if age is None or age < NIGHTLY_MAX_AGE_H:
         return []
-    return [f"notion mirror: no completed nightly refresh since {ts} "
+    return [f"notion mirror: no nightly refresh has run since {ts} "
             f"(threshold {NIGHTLY_MAX_AGE_H}h)"]
 
 
