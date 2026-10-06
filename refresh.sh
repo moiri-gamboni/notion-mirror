@@ -67,6 +67,24 @@ ntfy() {
     curl -sf -m 5 -H "Title: $title" -H "Priority: $prio" "${auth[@]}" -d "$body" \
         "http://localhost:2586/claude-$(whoami)" >/dev/null || say "ntfy failed"
 }
+RUN_MARK_WRITTEN=0
+killed() {
+    local name="$1" signum="$2" detail
+    trap '' TERM INT HUP
+    detail="killed by SIG$name (mode=$MODE)"
+    if [ "$RUN_MARK_WRITTEN" = "1" ]; then
+        detail+="; the run marker stays as it was, so the next daily run resumes over its writes"
+    fi
+    say "FAIL: $detail"
+    if [ "$MODE" != "rows" ]; then
+        ntfy high "Notion mirror refresh killed" "$detail"
+    fi
+    exit "$((128 + signum))"
+}
+trap 'killed TERM 15' TERM
+trap 'killed INT 2' INT
+trap 'killed HUP 1' HUP
+
 fail() {
     say "FAIL: $*"
     ntfy high "Notion mirror refresh failed" "$*"
@@ -430,7 +448,7 @@ export NOTION_TOKEN
 say "refresh start: mode=$MODE"
 RPS="${NOTION_REFRESH_RPS:-3.0}"
 RUN_STARTED="$(date -u -Is)"
-mark_run running
+mark_run running && RUN_MARK_WRITTEN=1
 REPORT_JSON="$STATE/last-run-report$([ "$MODE" = "rows" ] && echo .rows).json"
 if ! OUT="$(python3 "$TOOLS/refresh.py" --mode "$MODE" --rps "$RPS" "${ROWS_ARG[@]}")"; then
     # A contamination breach (or an assert that could not run) is a designed

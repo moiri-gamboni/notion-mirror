@@ -15,6 +15,8 @@ live inside.
 import json
 import os
 import shutil
+import signal
+import time
 import stat
 import subprocess
 import tempfile
@@ -305,6 +307,42 @@ class MirrorRepoPreflight(Sandbox):
                          "the mirror must be clean after the commit")
         self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.repo), outer_before)
         self.assertEqual(self.git("status", "--porcelain", cwd=self.repo), "")
+
+
+class SignalTest(Sandbox):
+    def test_term_leaves_running_marker_and_logs_death(self):
+        for mode in ("daily", "rows"):
+            with self.subTest(mode=mode):
+                write_exec(os.path.join(self.tools, "refresh.py"),
+                           "import time; time.sleep(0.8)\n")
+                env = dict(os.environ, NOTION_MIRROR=self.mirror,
+                           NOTION_MIRROR_TOOLS=self.tools, NOTION_TOKEN="sandbox",
+                           HOME=self.home, PATH=self.bin + os.pathsep + os.environ["PATH"],
+                           SANDBOX_CALL_LOG=self.call_log)
+                args = ["bash", REFRESH_SH, mode]
+                if mode == "rows":
+                    args.append("--props-only")
+                proc = subprocess.Popen(args, env=env, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True)
+                self.addCleanup(lambda: proc.poll() is None and proc.kill())
+                marker = os.path.join(self.state, "refresh-run.json")
+                deadline = time.monotonic() + 5
+                while not os.path.exists(marker) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(os.path.exists(marker))
+                proc.send_signal(signal.SIGTERM)
+                out, _ = proc.communicate(timeout=5)
+                self.assertEqual(proc.returncode, 143, out)
+                self.assertIn("FAIL: killed by SIGTERM", out)
+                with open(marker) as f:
+                    self.assertEqual(json.load(f)["status"], "running")
+                if mode == "daily":
+                    self.assertTrue(any("refresh killed" in x for x in self.ntfy_attempts()))
+                else:
+                    self.assertEqual(self.ntfy_attempts(), [])
+                os.unlink(marker)
+                if os.path.exists(self.call_log + ".curl"):
+                    os.unlink(self.call_log + ".curl")
 
 
 if __name__ == "__main__":
