@@ -380,6 +380,10 @@ class WrapperTest(RepoCase):
         res = self.run_refresh(5, extra={"NOTION_MIRROR_ROW_FLOOR_ALLOW_SHRINK": "1"})
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertEqual(len(self.commits()), len(before) + 1, res.stdout)
+        # Logged, because the allowance covers every table in the run: the log is
+        # where an operator checks that only the inspected one went through.
+        self.assertIn("400 -> 5 rows", res.stdout)
+        self.assertIn("1 table(s) shrank; accepted", res.stdout)
 
     def test_the_recovery_the_refusal_names_commits(self):
         """After a refusal the shrink allowance alone is not enough: the refused

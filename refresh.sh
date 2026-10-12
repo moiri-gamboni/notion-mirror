@@ -386,7 +386,7 @@ if [ -n "$ENGINE_DIRTY" ]; then
         ntfy default "Notion mirror: resuming over a crashed run" \
             "The previous refresh died before committing; this $MODE run is continuing over its writes. $(printf '%s\n' "$ENGINE_DIRTY" | wc -l) uncommitted path(s), e.g. $(listed "$ENGINE_DIRTY")"
     else
-        guard_out skipped dirty_tree "the mirror has uncommitted changes in the engine's own paths ($(listed "$ENGINE_DIRTY"); a refused run's output, a hand edit, or a crash no marker records) — commit/stash them, or NOTION_REFRESH_RESUME=1 to continue a crashed run"
+        guard_out skipped dirty_tree "the mirror has uncommitted changes in the engine's own paths ($(listed "$ENGINE_DIRTY"); a refused run's output, a hand edit, or a crash no marker records) — commit/stash them, or NOTION_REFRESH_RESUME=1 to continue over them once inspected (after a row-floor refusal, with NOTION_MIRROR_ROW_FLOOR_ALLOW_SHRINK=1 too)"
     fi
 fi
 if [ -n "$FOREIGN_DIRTY" ]; then
@@ -503,6 +503,9 @@ if ! FLOOR_OUT="$(python3 "$TOOLS/row_floor.py" --repo "$NDIR" 2>&1)"; then
     mark_run refused row_floor
     guard_out failed row_floor "$FLOOR_OUT"
 fi
+# An accepted shrink (NOTION_MIRROR_ROW_FLOOR_ALLOW_SHRINK) is logged: the allowance
+# covers every table in the run, and this is where the ones it let through show.
+[ -n "$FLOOR_OUT" ] && say "$FLOOR_OUT"
 
 # --- rows mode: slim commit, then out ----------------------------------------
 if [ "$MODE" = "rows" ]; then
