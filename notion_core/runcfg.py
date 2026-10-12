@@ -38,7 +38,8 @@ def claude_config_token(path):
 
     The server carries it as `NOTION_TOKEN`, or as the bearer in `OPENAPI_MCP_HEADERS`
     when it is registered with headers of its own (an explicit Notion-Version). Raises
-    KeyError when it carries neither, OSError or ValueError when the file is unreadable."""
+    KeyError when the server, or both forms of the token, are missing; OSError or
+    ValueError when the file, or the headers inside it, do not read as JSON."""
     with open(path) as f:
         env = json.load(f)["mcpServers"]["notion"]["env"]
     if env.get("NOTION_TOKEN"):

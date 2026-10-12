@@ -109,7 +109,7 @@ def log(msg):
 
 
 def notion_token():
-    """`$NOTION_TOKEN`, else the Notion MCP server's in Claude's `.claude.json` under
+    """`$NOTION_TOKEN`, else the Notion MCP server's token in Claude's `.claude.json` under
     `$CLAUDE_CONFIG_DIR` (default `~/.claude`). Raises when neither is there; `main`
     calls it once before serving so that failure refuses the start.
 
