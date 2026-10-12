@@ -235,7 +235,9 @@ class CliTest(RepoCase):
         res = self.run_cli()
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("8682 -> 57 rows", res.stdout)
-        self.assertIn("NOTION_MIRROR_ROW_FLOOR_ALLOW_SHRINK=1", res.stdout)
+        # Both: the refusal leaves the tree dirty, so the shrink allowance alone
+        # stops at the next run's dirty-tree preflight.
+        self.assertIn("NOTION_REFRESH_RESUME=1 NOTION_MIRROR_ROW_FLOOR_ALLOW_SHRINK=1", res.stdout)
 
     def test_the_default_repo_is_the_configured_mirror(self):
         """Without `--repo` the floor resolves the configured mirror and checks it."""
@@ -376,6 +378,20 @@ class WrapperTest(RepoCase):
     def test_a_real_mass_deletion_can_be_let_through(self):
         before = self.commits()
         res = self.run_refresh(5, extra={"NOTION_MIRROR_ROW_FLOOR_ALLOW_SHRINK": "1"})
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(len(self.commits()), len(before) + 1, res.stdout)
+
+    def test_the_recovery_the_refusal_names_commits(self):
+        """After a refusal the shrink allowance alone is not enough: the refused
+        tree stops the re-run at the dirty-tree preflight, and no run resumes over
+        a refused one by itself. The two variables the message names together are."""
+        before = self.commits()
+        self.run_refresh(5)
+        shrink_only = self.run_refresh(5, extra={"NOTION_MIRROR_ROW_FLOOR_ALLOW_SHRINK": "1"})
+        self.assertEqual(self.marker()["last_attempt"]["reason"], "dirty_tree", shrink_only.stdout)
+        self.assertEqual(self.commits(), before)
+        res = self.run_refresh(5, extra={"NOTION_REFRESH_RESUME": "1",
+                                         "NOTION_MIRROR_ROW_FLOOR_ALLOW_SHRINK": "1"})
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertEqual(len(self.commits()), len(before) + 1, res.stdout)
 

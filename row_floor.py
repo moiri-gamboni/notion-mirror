@@ -161,7 +161,8 @@ def main(argv=None):
     print(f"row floor: refusing to commit — {len(breaches)} table(s) lost more than "
           f"{args.pct:g}% of their rows. The working tree is left as it is: inspect it, "
           f"and if the shrink is real (a mass deletion in Notion) re-run with "
-          f"NOTION_MIRROR_ROW_FLOOR_ALLOW_SHRINK=1.")
+          f"NOTION_REFRESH_RESUME=1 NOTION_MIRROR_ROW_FLOOR_ALLOW_SHRINK=1 (the resume "
+          f"variable because this refusal leaves the tree dirty, which stops the next run).")
     return 1
 
 
