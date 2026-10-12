@@ -1,9 +1,11 @@
-"""How a mirror run is configured: the row-id parser, and a retired budget table.
+"""How a mirror run is configured: the row-id parser, the token in Claude's config, and
+a retired budget table.
 
 `parse_row_ids` is read rather than copied by anything that drives a run from outside —
 `tasks refresh-mirror` takes its id validation from here, so a caller cannot disagree
 with the run it is about to start.
 """
+import json
 import re
 
 from .util import undash
@@ -29,3 +31,16 @@ def parse_row_ids(s):
     if not given:
         raise ValueError("no row ids given")
     return [undash(x) for x in given]
+
+
+def claude_config_token(path):
+    """The Notion token of the Notion MCP server in Claude's `.claude.json` at `path`.
+
+    The server carries it as `NOTION_TOKEN`, or as the bearer in `OPENAPI_MCP_HEADERS`
+    when it is registered with headers of its own (an explicit Notion-Version). Raises
+    KeyError when it carries neither, OSError or ValueError when the file is unreadable."""
+    with open(path) as f:
+        env = json.load(f)["mcpServers"]["notion"]["env"]
+    if env.get("NOTION_TOKEN"):
+        return env["NOTION_TOKEN"]
+    return json.loads(env["OPENAPI_MCP_HEADERS"])["Authorization"].removeprefix("Bearer ")

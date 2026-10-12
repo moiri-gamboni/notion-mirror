@@ -309,6 +309,27 @@ class NoTokenStartup(unittest.TestCase):
         thread.assert_not_called()
 
 
+class TokenFromClaudeConfig(unittest.TestCase):
+    """The Notion MCP server carries the token either as NOTION_TOKEN or inside
+    OPENAPI_MCP_HEADERS, depending on how it was registered; the receiver reads the
+    config only at startup, so a form it cannot read surfaces at the next restart."""
+
+    def token_from(self, server_env):
+        with tempfile.TemporaryDirectory() as cfg, \
+             mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cfg}):
+            os.environ.pop("NOTION_TOKEN", None)
+            with open(os.path.join(cfg, ".claude.json"), "w") as f:
+                json.dump({"mcpServers": {"notion": {"env": server_env}}}, f)
+            return wr.notion_token()
+
+    def test_a_token_in_the_server_env(self):
+        self.assertEqual(self.token_from({"NOTION_TOKEN": "ntn_a"}), "ntn_a")
+
+    def test_a_token_in_the_server_headers(self):
+        headers = json.dumps({"Authorization": "Bearer ntn_b", "Notion-Version": "2025-09-03"})
+        self.assertEqual(self.token_from({"OPENAPI_MCP_HEADERS": headers}), "ntn_b")
+
+
 class UnmountedVolumeStartup(unittest.TestCase):
     """An unmounted mirror reaches the journal as a refusal, not a traceback."""
 

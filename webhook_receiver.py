@@ -49,6 +49,7 @@ except mirror_root.MirrorError as e:
     sys.stderr.write(f"refusing to start: {e}\n")
     sys.exit(1)
 import refresh
+from notion_core.runcfg import claude_config_token
 
 STATE = paths.STATE
 TOKEN_FILE = os.path.join(STATE, paths.WEBHOOK_SECRET)
@@ -108,7 +109,7 @@ def log(msg):
 
 
 def notion_token():
-    """`$NOTION_TOKEN`, else the Notion MCP server's env in Claude's `.claude.json` under
+    """`$NOTION_TOKEN`, else the Notion MCP server's in Claude's `.claude.json` under
     `$CLAUDE_CONFIG_DIR` (default `~/.claude`). Raises when neither is there; `main`
     calls it once before serving so that failure refuses the start.
 
@@ -121,8 +122,7 @@ def notion_token():
     if tok:
         return tok
     cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
-    with open(os.path.join(cfg, ".claude.json")) as f:
-        return json.load(f)["mcpServers"]["notion"]["env"]["NOTION_TOKEN"]
+    return claude_config_token(os.path.join(cfg, ".claude.json"))
 
 
 def ntfy(title, message, priority="default"):

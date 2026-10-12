@@ -13,7 +13,7 @@ it that way.
   md_blocks  markdown -> Notion blocks: the inverse of the two above
   flatten    property values -> cell strings, plus the 25-item property expansion
   rowmd      the row file's grammar: the marker, the region delimiters, the cid trailer
-  runcfg     the `--rows` id parser
+  runcfg     the `--rows` id parser, and the token in Claude's `.claude.json`
   util       the primitives those share: time, id spelling, the run log
 
 `md_blocks` lived inside `notes/infra-task-triage/proposals/push.py` until 2026-08-10;
