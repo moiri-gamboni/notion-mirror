@@ -111,9 +111,12 @@ class Sandbox(unittest.TestCase):
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                               text=True).stdout
 
-    def write_config(self, token):
+    def write_config(self, token, as_headers=False):
+        server_env = ({"OPENAPI_MCP_HEADERS": json.dumps({"Authorization": f"Bearer {token}",
+                                                          "Notion-Version": "2025-09-03"})}
+                      if as_headers else {"NOTION_TOKEN": token})
         with open(os.path.join(self.config, ".claude.json"), "w") as f:
-            json.dump({"mcpServers": {"notion": {"env": {"NOTION_TOKEN": token}}}}, f)
+            json.dump({"mcpServers": {"notion": {"env": server_env}}}, f)
 
     def run_refresh(self, expected_token, inherited=None, args=("rows", "--props-only"),
                     mirror=None):
@@ -165,6 +168,13 @@ class TokenPreflight(Sandbox):
     def test_the_token_is_read_from_the_configured_claude_config_dir(self):
         self.write_config("config-file-token")
         res = self.run_refresh("config-file-token")
+        self.assertEqual(self.token_seen(), "match", res.stdout)
+
+    def test_the_token_is_read_from_the_server_headers(self):
+        """A server registered with headers of its own, to pin Notion-Version, carries
+        the token only as the bearer in OPENAPI_MCP_HEADERS."""
+        self.write_config("header-token", as_headers=True)
+        res = self.run_refresh("header-token")
         self.assertEqual(self.token_seen(), "match", res.stdout)
 
     def test_rows_mode_records_an_unreadable_config_instead_of_ntfying(self):

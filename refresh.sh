@@ -448,11 +448,14 @@ fi
 # it committed to. Setting NOTION_MIRROR alone still does: the token has to be
 # set too.
 if [ -z "${NOTION_TOKEN:-}" ]; then
-    NOTION_TOKEN="$(python3 - "$CLAUDE_CONFIG_DIR/.claude.json" <<'EOF'
-import json, sys
-print(json.load(open(sys.argv[1]))["mcpServers"]["notion"]["env"]["NOTION_TOKEN"])
+    # $SELF, not $TOOLS: $TOOLS may be a sandbox's stub engine, which has no notion_core.
+    NOTION_TOKEN="$(python3 - "$CLAUDE_CONFIG_DIR/.claude.json" "$SELF" <<'EOF'
+import sys
+sys.path.insert(0, sys.argv[2])
+from notion_core.runcfg import claude_config_token
+print(claude_config_token(sys.argv[1]))
 EOF
-)" || guard_out failed no_token "could not extract NOTION_TOKEN from $CLAUDE_CONFIG_DIR/.claude.json"
+)" || guard_out failed no_token "could not read the Notion token from $CLAUDE_CONFIG_DIR/.claude.json (the Notion MCP server's NOTION_TOKEN or the bearer in its OPENAPI_MCP_HEADERS)"
 fi
 export NOTION_TOKEN
 

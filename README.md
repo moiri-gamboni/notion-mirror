@@ -17,7 +17,7 @@ Stdlib Python 3.12 and bash; no packages. `NOTION_TOKEN` comes from the environm
 3. Create the directory (or mount the volume), then `./refresh.sh init`. It makes `workspace/_databases/` and `_meta/state/` and refuses if the mirror already exists.
 4. Make the mirror a git repository: `git -C /path/to/mirror init`, and ignore its run state — `_meta/state/` must be in the mirror's `.gitignore`, or every marker write would dirty the tree the preflight guards.
 5. Create a Notion internal integration and share it with read access to the pages and databases you want mirrored: [https://developers.notion.com/docs/create-a-notion-integration](https://developers.notion.com/docs/create-a-notion-integration).
-6. Put the token where the wrapper reads it: `NOTION_TOKEN` in the environment, or Claude's `.claude.json` under `CLAUDE_CONFIG_DIR` (default `~/.claude`) with the Notion MCP server's `env.NOTION_TOKEN`.
+6. Put the token where the wrapper reads it: `NOTION_TOKEN` in the environment, or Claude's `.claude.json` under `CLAUDE_CONFIG_DIR` (default `~/.claude`), where the Notion MCP server carries it as `env.NOTION_TOKEN` or as the bearer in `env.OPENAPI_MCP_HEADERS`.
 7. If the workspace has machine-generated subtrees (bot-written delta logs, recordings), name them: `NOTION_MIRROR_AUTOMATION_SUBTREES=Hub/Automations:Other/Logs` in the env file. A page under those prefixes is captured once and then left alone: never re-walked, never comment-scanned.
 8. Run the first refresh: `./refresh.sh daily`. It performs full discovery over every database shared with the integration at ~3 req/s, which takes hours.
 
@@ -114,7 +114,7 @@ The parser in `notion_core/md_blocks.py` inverts the renderer; a rendering chang
 | `NOTION_REFRESH_NTFY_DIGEST` | `1` | `0` sends no digest from any mode, for a deployment that reads the changelog note directly. Failure alerts still go out. |
 | `NOTION_REFRESH_PUSH` | `0` | `1` pushes the mirror repository after the commit. |
 | `NOTION_REFRESH_RESUME` | `0` | `1` proceeds over a dirty tree: a crashed run's own writes, or a refused run's once inspected. A nightly resumes over a crashed run by itself, never over a refused one. |
-| `NOTION_TOKEN` | from `$CLAUDE_CONFIG_DIR/.claude.json` | The integration token. |
+| `NOTION_TOKEN` | the Notion MCP server's token in `$CLAUDE_CONFIG_DIR/.claude.json` | The integration token. The server carries it as `NOTION_TOKEN` or as the bearer in `OPENAPI_MCP_HEADERS`; either is read. |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Where `.claude.json` is read from. |
 
 Notifications go to a local ntfy server at `http://localhost:2586/claude-<user>`, with a bearer token from `~/services/.ntfy-token` when that file exists; a failed send is logged and never fatal.
