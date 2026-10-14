@@ -42,11 +42,12 @@ with open(os.path.join(mirror, "workspace", "changed.txt"), "w") as f:
 print(json.dumps({"changes": 1}))
 '''
 
-# Records the -p prompt it was handed, its whole argv (NUL-separated), the name of its
-# parent process and the directory it was run from, then emits a minimal valid note
+# Records the -p prompt it was handed, its whole argv (NUL-separated), its environment, the
+# name of its parent process and the directory it was run from, then emits a minimal valid note
 # (starts with #).
 STUB_CLAUDE = '''#!/usr/bin/env bash
 printf '%s\\0' "$@" > "$CLAUDE_PROMPT_LOG.argv"
+env > "$CLAUDE_PROMPT_LOG.env"
 ps -o comm= -p "$PPID" > "$CLAUDE_PROMPT_LOG.parent"
 prompt=""
 while [ $# -gt 0 ]; do
@@ -155,6 +156,10 @@ class Sandbox(unittest.TestCase):
         with open(self.prompt_log + ".argv") as f:
             return f.read().split("\0")[:-1]
 
+    def claude_env(self):
+        with open(self.prompt_log + ".env") as f:
+            return dict(line.rstrip("\n").split("=", 1) for line in f if "=" in line)
+
     def claude_parent(self):
         with open(self.prompt_log + ".parent") as f:
             return f.read().strip()
@@ -230,6 +235,24 @@ class ModelCallIsIsolated(Sandbox):
         res = self.run_refresh("reanalyze", sha)
         self.assertEqual(res.returncode, 0, res.stdout)
         self.check_argv(self.claude_argv())
+
+    def check_telemetry_opt_out(self, *args):
+        """The opt-out must not depend on `--safe-mode` applying the settings file. Each
+        switch is planted as "0" in the caller's environment, so the child reading 1 proves
+        the call sets it, whatever the runner's own environment holds."""
+        switches = ("DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DO_NOT_TRACK",
+                    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY", "DISABLE_FEEDBACK_COMMAND")
+        res = self.run_refresh(*args, **{name: "0" for name in switches})
+        self.assertEqual(res.returncode, 0, res.stdout)
+        child = self.claude_env()
+        for name in switches:
+            self.assertEqual(child.get(name), "1", name)
+
+    def test_the_nightly_call_sets_the_telemetry_opt_out_itself(self):
+        self.check_telemetry_opt_out("daily")
+
+    def test_the_reanalyze_call_sets_the_telemetry_opt_out_itself(self):
+        self.check_telemetry_opt_out("reanalyze", self.seed_reanalyze_note())
 
 
 class StubAlert(Sandbox):

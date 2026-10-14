@@ -303,6 +303,12 @@ first_line() { awk 'NF{print substr($0,1,300); exit}' "$@"; }
 run_changelog_model() {
     local prompt="$1" out="$2" err rc
     err="$(mktemp)"
+    # The five variables are the caller's telemetry opt-out, set on the call itself:
+    # `--safe-mode` disables "all customizations" and only happens to keep applying the
+    # settings file's `env` block, which its help text does not promise, so the opt-out must
+    # not depend on it.
+    DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 DO_NOT_TRACK=1 \
+    CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 DISABLE_FEEDBACK_COMMAND=1 \
     claude -p "$prompt" \
         --safe-mode --strict-mcp-config --no-session-persistence \
         --system-prompt "$(cat "$TOOLS/changelog-system-prompt.md")" \
