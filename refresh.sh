@@ -10,6 +10,9 @@
 # Pipeline: refresh.py (incremental API pull into the mirror) -> if changes:
 # stage the mirror -> claude -p writes a reader-relevance-ranked changelog
 # note -> CHANGELOG.md index line -> git commit -> ntfy digest (TL;DR).
+# The model call runs isolated (--safe-mode: none of the user's CLAUDE.md, hooks or
+# MCP servers), on its own system prompt (changelog-system-prompt.md), with no
+# outer timeout and no fallback model.
 # The mirror is a git repository of its own (its .git beside workspace/), and
 # every git command here runs inside it. Failures ntfy loudly; a failed
 # analysis degrades to a stub note so the data commit still lands. No git
@@ -32,12 +35,13 @@
 # NOTION_MIRROR_AUTOMATION_SUBTREES, read by refresh.py.
 #
 # Env knobs: NOTION_REFRESH_RPS (3.0)
-#            NOTION_REFRESH_MODEL (opus) · NOTION_REFRESH_EFFORT (medium)
-#            NOTION_REFRESH_ANALYSIS_TIMEOUT (3600) · NOTION_REFRESH_PUSH (0)
+#            NOTION_REFRESH_MODEL (sonnet) · NOTION_REFRESH_EFFORT (xhigh)
+#            NOTION_REFRESH_PUSH (0)
 #            NOTION_REFRESH_DEFER_NTFY (0) · NOTION_REFRESH_NTFY_DIGEST (1)
 #            NOTION_REFRESH_RESUME (0)
 #            NOTION_MIRROR_TOOLS — the ENGINE-CODE root (where refresh.py,
-#            rows_status.py, row_floor.py and changelog-prompt.md are read from).
+#            rows_status.py, row_floor.py, changelog-prompt.md and
+#            changelog-system-prompt.md are read from).
 #            Defaults to this script's own directory; a sandbox points it at a
 #            stub engine. Cron never sets it: the default — engine beside this
 #            script — is the production one, and an override in a cron line
@@ -53,8 +57,8 @@
 set -uo pipefail
 
 MODE="${1:-daily}"
-MODEL="${NOTION_REFRESH_MODEL:-opus}"
-EFFORT="${NOTION_REFRESH_EFFORT:-medium}"
+MODEL="${NOTION_REFRESH_MODEL:-sonnet}"
+EFFORT="${NOTION_REFRESH_EFFORT:-xhigh}"
 export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
 say() { echo "[$(date -u -Is)] $*"; logger -t "notion-mirror" "$*" 2>/dev/null || true; }
@@ -281,6 +285,27 @@ changelog_prompt() {
     printf '\n---\n%s\n' "$run_context"
 }
 
+# --- the changelog model call (one definition, both call sites) ---------------
+# An unattended call carries nothing from the user's own sessions. --safe-mode drops
+# CLAUDE.md, hooks, skills, plugins and MCP servers (a plain `claude -p` loads the
+# user's CLAUDE.md and the rest from any directory) and keeps the subscription login,
+# which --bare would not (it forces an API key). The job brings its own system prompt. --permission-mode
+# dontAsk is what makes --allowedTools a limit: without it the list only pre-approves
+# those tools, and a Write or any other Bash command runs unasked. There is no timeout
+# and no fallback model on purpose: the call either finishes or fails, and a failure is
+# reported rather than papered over. The note goes to $2; success means a usable one.
+run_changelog_model() {
+    local prompt="$1" out="$2"
+    claude -p "$prompt" \
+        --safe-mode --strict-mcp-config --no-session-persistence \
+        --system-prompt "$(cat "$TOOLS/changelog-system-prompt.md")" \
+        --model "$MODEL" --effort "$EFFORT" \
+        --permission-mode dontAsk \
+        --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)" \
+        < /dev/null > "$out" 2>>"${TMPDIR:-/tmp}/notion-mirror-claude.err" \
+        && [ -s "$out" ] && head -5 "$out" | grep -q "^#"
+}
+
 # --- notify: send the deferred digest for the most recent run, then exit -----
 # (paired with NOTION_REFRESH_DEFER_NTFY so the run can be scheduled early and
 # the phone notification arrives at a useful hour)
@@ -411,18 +436,13 @@ if [ "$MODE" = "reanalyze" ]; then
     SUMMARY="$(git show -s --format=%s "$SHA" | sed 's/^notion refresh ([a-z-]*): [0-9-]* — //')"
     say "reanalyzing refresh $SHA ($DATE_UTC)"
     command -v claude >/dev/null || fail "claude CLI missing"
-    ANALYSIS_TIMEOUT="${NOTION_REFRESH_ANALYSIS_TIMEOUT:-3600}"
     PROMPT="$(changelog_prompt "REANALYSIS run context: the refresh being analyzed is already committed as
 $SHA (date $DATE_UTC, summary: $SUMMARY). There is NO staged diff — instead of
 'git diff --cached', use 'git show --stat $SHA' for shape and
 'git diff $SHA^ $SHA -- <path>' for targeted content. The machine run report is
 embedded in the existing stub note at $REL — read it first, then write
 the replacement note.")"
-    if timeout "$ANALYSIS_TIMEOUT" claude -p "$PROMPT" \
-        --model "$MODEL" --effort "$EFFORT" \
-        --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)" \
-        < /dev/null > "$NOTE.tmp" 2>>"${TMPDIR:-/tmp}/notion-mirror-claude.err" \
-        && [ -s "$NOTE.tmp" ] && head -5 "$NOTE.tmp" | grep -q "^#"; then
+    if run_changelog_model "$PROMPT" "$NOTE.tmp"; then
         mv "$NOTE.tmp" "$NOTE"
         git add -- "$NOTE" && git commit -q -m "notion changelog: reanalyzed $DATE_UTC refresh ($SHA)"
         send_note_ntfy "$NOTE" "$SUMMARY" "$REL"
@@ -592,24 +612,17 @@ mkdir -p "$NDIR/_meta/changelog"
 # The analysis is the whole point of the pipeline and is a single model call,
 # so it is never skipped on a usage guard — silently leaving a stub and an
 # unhelpful notification is worse than the marginal usage of one call. If it
-# does fail (rate-limited/timeout), the stub fallback + `reanalyze <sha>` cover it.
+# does fail (rate-limited, an API error), the stub fallback + `reanalyze <sha>` cover it.
 ANALYZED=0
 if command -v claude >/dev/null 2>&1; then
     say "running $MODEL changelog analysis"
     PROMPT="$(changelog_prompt "Run context: mode=$MODE, date=$DATE_UTC (UTC). The refresh's staged diff and
 reports are in place; the summary line is: $SUMMARY")"
-    if timeout "${NOTION_REFRESH_ANALYSIS_TIMEOUT:-3600}" claude -p "$PROMPT" \
-        --model "$MODEL" --effort "$EFFORT" \
-        --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)" \
-        < /dev/null > "$NOTE.tmp" 2>>"${TMPDIR:-/tmp}/notion-mirror-claude.err"; then
-        if [ -s "$NOTE.tmp" ] && head -5 "$NOTE.tmp" | grep -q "^#"; then
-            mv "$NOTE.tmp" "$NOTE"
-            ANALYZED=1
-        else
-            say "analysis output empty/malformed — falling back to stub note"
-        fi
+    if run_changelog_model "$PROMPT" "$NOTE.tmp"; then
+        mv "$NOTE.tmp" "$NOTE"
+        ANALYZED=1
     else
-        say "analysis failed/timed out — falling back to stub note"
+        say "analysis failed or produced no usable note — falling back to stub note"
     fi
 fi
 if [ "$ANALYZED" != "1" ]; then
@@ -617,7 +630,7 @@ if [ "$ANALYZED" != "1" ]; then
     {
         echo "# Notion changes — $DATE_UTC ($MODE refresh)"
         echo
-        echo "_⚠ Automated analysis unavailable this run (claude -p failed/timed out or CLI missing). Raw refresh report below; re-run with \`refresh.sh reanalyze <sha>\` against this commit._"
+        echo "_⚠ Automated analysis unavailable this run (claude -p failed or CLI missing). Raw refresh report below; re-run with \`refresh.sh reanalyze <sha>\` against this commit._"
         echo
         cat "$STATE/last-run-report.md"
         # a stub note still gets a clearly-labelled ntfy (not masquerading as analysis)

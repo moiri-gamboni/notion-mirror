@@ -7,8 +7,8 @@ Driven through the real `refresh.sh` with a stubbed `claude` that records the pr
 handed. `NOTION_MIRROR_CHANGELOG_CONTEXT` points the context lookup at a sandbox file so
 the test never reads or writes the real `~/.config` path. `NOTION_MIRROR_TOOLS` is a stub
 engine (a fake `refresh.py` that reports one change and writes the report the wrapper
-reads), beside the real `changelog-prompt.md`, `row_floor.py`, `rows_status.py` and
-`mirror_root.py`.
+reads), beside the real `changelog-prompt.md`, `changelog-system-prompt.md`,
+`row_floor.py`, `rows_status.py` and `mirror_root.py`.
 """
 import json
 import os
@@ -42,9 +42,12 @@ with open(os.path.join(mirror, "workspace", "changed.txt"), "w") as f:
 print(json.dumps({"changes": 1}))
 '''
 
-# Records the -p prompt it was handed and the directory it was run from, then emits a
-# minimal valid note (starts with #).
+# Records the -p prompt it was handed, its whole argv (NUL-separated), the name of its
+# parent process and the directory it was run from, then emits a minimal valid note
+# (starts with #).
 STUB_CLAUDE = '''#!/usr/bin/env bash
+printf '%s\\0' "$@" > "$CLAUDE_PROMPT_LOG.argv"
+ps -o comm= -p "$PPID" > "$CLAUDE_PROMPT_LOG.parent"
 prompt=""
 while [ $# -gt 0 ]; do
     if [ "$1" = "-p" ]; then shift; prompt="$1"; fi
@@ -82,8 +85,8 @@ class Sandbox(unittest.TestCase):
                   self.home, self.config, self.bin):
             os.makedirs(d)
         write_exec(os.path.join(self.tools, "refresh.py"), STUB_REFRESH)
-        for name in ("rows_status.py", "row_floor.py", "changelog-prompt.md", "mirror_root.py",
-                     "tree_status.py"):
+        for name in ("rows_status.py", "row_floor.py", "changelog-prompt.md",
+                     "changelog-system-prompt.md", "mirror_root.py", "tree_status.py"):
             shutil.copy(os.path.join(TOOLS, name), os.path.join(self.tools, name))
         write_exec(os.path.join(self.bin, "claude"), STUB_CLAUDE)
         for name in ("curl", "logger"):
@@ -127,6 +130,14 @@ class Sandbox(unittest.TestCase):
         with open(self.prompt_log) as f:
             return f.read()
 
+    def claude_argv(self):
+        with open(self.prompt_log + ".argv") as f:
+            return f.read().split("\0")[:-1]
+
+    def claude_parent(self):
+        with open(self.prompt_log + ".parent") as f:
+            return f.read().strip()
+
     def claude_cwd(self):
         with open(self.prompt_log + ".cwd") as f:
             return f.read().strip()
@@ -164,6 +175,40 @@ class DailyCallSite(Sandbox):
         self.assertIn(BASE_MARKER, p)
         self.assertIn("LANE MARKER", p)
         self.assertIn("Reader context", p)
+
+
+class ModelCallIsIsolated(Sandbox):
+    """The analysis is an unattended model call on the box's settled configuration: no
+    session context, its own system prompt, a read-only tool list that is enforced, one
+    model and effort, and nothing that hides a failure — no timeout, no fallback model.
+    The same argv at both call sites."""
+
+    def check_argv(self, argv):
+        flag = lambda name: argv[argv.index(name) + 1]
+        for name in ("--safe-mode", "--strict-mcp-config", "--no-session-persistence"):
+            self.assertIn(name, argv)
+        self.assertEqual(flag("--model"), "sonnet")
+        self.assertEqual(flag("--effort"), "xhigh")
+        self.assertEqual(flag("--permission-mode"), "dontAsk")
+        with open(os.path.join(TOOLS, "changelog-system-prompt.md")) as f:
+            self.assertEqual(flag("--system-prompt"), f.read().rstrip("\n"))
+        tools = flag("--allowedTools").split(",")
+        self.assertEqual(tools, ["Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)",
+                                 "Bash(git show:*)", "Bash(git status:*)"])
+        for name in ("--bare", "--fallback-model", "--append-system-prompt"):
+            self.assertNotIn(name, argv)
+        self.assertNotEqual(self.claude_parent(), "timeout", "an outer timeout wraps the call")
+
+    def test_the_nightly_call(self):
+        res = self.run_refresh("daily")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.check_argv(self.claude_argv())
+
+    def test_reanalyze_call(self):
+        sha = self.seed_reanalyze_note()
+        res = self.run_refresh("reanalyze", sha)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.check_argv(self.claude_argv())
 
 
 class MirrorRepoIsTheCwd(Sandbox):

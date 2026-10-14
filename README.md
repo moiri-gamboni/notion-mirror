@@ -67,7 +67,7 @@ A scheduler that resolves which rows to refresh belongs to whatever tool owns th
 - **A nightly died.** A signalled run logs `FAIL: killed by SIG…`. Run `./refresh.sh daily` under its usual launcher to resume over its writes, or wait for the next nightly.
 - **Row floor tripped** (`row floor: refusing to commit — N table(s) lost more than 40% of their rows`). Inspect the CSV named in the message. If the shrink is real (a mass deletion in Notion), `NOTION_REFRESH_RESUME=1 NOTION_MIRROR_ROW_FLOOR_ALLOW_SHRINK=1 ./refresh.sh daily` accepts it and logs each accepted table as a `row floor:` line. The resume variable is needed because the refusal left the tree dirty and the run marker `refused`, which no run continues over by itself; the shrink allowance alone stops at the dirty-tree preflight. The allowance covers every table in that run, so afterwards check that those lines name only the table you inspected, and revert the commit if another one appears. If it is a torn render, revert the tree.
 - **Comment-contamination breach.** One comment text is attributed to more than 30 pages. If it is genuine repetition (judging boilerplate posted onto many rows), raise `MAX_COMMENT_PAGES` rather than baselining the text; `--write-baseline` exists for a real pre-existing mess and a recorded breach still fails if it spreads.
-- **The changelog note is a stub** (`claude -p` failed or timed out). `./refresh.sh reanalyze <sha>` regenerates the note for that commit and sends its digest.
+- **The changelog note is a stub** (`claude -p` failed). `./refresh.sh reanalyze <sha>` regenerates the note for that commit and sends its digest.
 - **Two writers.** `refresh.py` exits 3 without writing when another writer holds `~/.locks/notion-mirror-internal`; wait for it, or run through `refresh.sh`.
 - **The mirror volume is not mounted.** Every writer refuses at import with the resolver's message; the dead-man reports one line, `mirror alarms unavailable: …`.
 
@@ -94,7 +94,7 @@ The parser in `notion_core/md_blocks.py` inverts the renderer; a rendering chang
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `NOTION_MIRROR_TOOLS` | the script's own directory | Where `refresh.py`, `rows_status.py`, `row_floor.py` and `changelog-prompt.md` are read from. For sandboxes; cron never sets it. |
+| `NOTION_MIRROR_TOOLS` | the script's own directory | Where `refresh.py`, `rows_status.py`, `row_floor.py`, `changelog-prompt.md` and `changelog-system-prompt.md` are read from. For sandboxes; cron never sets it. |
 | `NOTION_MIRROR_CHANGELOG_CONTEXT` | `~/.config/notion-mirror/changelog-context.md` | Reader context appended to the changelog prompt: whose lane this installation ranks for, in that person's words. Absent on a fresh install. |
 | `NOTION_MIRROR_ROW_FLOOR_PCT` | `40` | A changed CSV that lost more than this percentage of its rows refuses the commit. |
 | `NOTION_MIRROR_ROW_FLOOR_MIN_ROWS` | `20` | Tables smaller than this are exempt from the floor. |
@@ -107,9 +107,8 @@ The parser in `notion_core/md_blocks.py` inverts the renderer; a rendering chang
 | `NOTION_REFRESH_LEGACY_ROWS` | `100` | The same for rows. |
 | `NOTION_REFRESH_COMMENT_RPS` | `8` | Pace of the comment-listing phases (resolution check, audits), which run several requests at once. The workspace's rate limit is shared with every other integration. |
 | `NOTION_REFRESH_COMMENT_WORKERS` | `6` | Requests in flight in those phases. |
-| `NOTION_REFRESH_MODEL` | `opus` | Model for the changelog analysis (the CLI alias, so the latest Opus). |
-| `NOTION_REFRESH_EFFORT` | `medium` | Its `--effort`. |
-| `NOTION_REFRESH_ANALYSIS_TIMEOUT` | `3600` | Seconds before the analysis is abandoned for a stub note. |
+| `NOTION_REFRESH_MODEL` | `sonnet` | Model for the changelog analysis (the CLI alias, so the latest Sonnet). |
+| `NOTION_REFRESH_EFFORT` | `xhigh` | Its `--effort`. |
 | `NOTION_REFRESH_DEFER_NTFY` | `0` | `1` records the digest for a later `notify` run instead of sending it. |
 | `NOTION_REFRESH_NTFY_DIGEST` | `1` | `0` sends no digest from any mode, for a deployment that reads the changelog note directly. Failure alerts still go out. |
 | `NOTION_REFRESH_PUSH` | `0` | `1` pushes the mirror repository after the commit. |
@@ -129,7 +128,7 @@ refresh.sh reanalyze <sha>              regenerate the changelog note of a commi
 refresh.sh init                         create the empty mirror skeleton
 ```
 
-Preflight, in order: the mirror resolves (`mirror_root.py`); the mirror directory is the top level of its own git repository; the self-lock (`~/.locks/notion-mirror-internal`, `flock -n`); no `index.lock`, merge, rebase or cherry-pick in flight; no uncommitted change in the engine's own paths (see [How to recover from a refused run](#how-to-recover-from-a-refused-run) for the exceptions). Then the run marker, the token, the engine, the row floor (`row_floor.py --repo <mirror>`), and in `daily`/`full-comments` the changelog analysis from inside the mirror (`claude -p` with `changelog-prompt.md` plus the reader context), a `CHANGELOG.md` index line, the commit, the digest. Every commit stages the engine's paths only (`tree_status.py --stage`). `rows` commits with no analysis, index line or digest, then writes the status marker from the run's own report.
+Preflight, in order: the mirror resolves (`mirror_root.py`); the mirror directory is the top level of its own git repository; the self-lock (`~/.locks/notion-mirror-internal`, `flock -n`); no `index.lock`, merge, rebase or cherry-pick in flight; no uncommitted change in the engine's own paths (see [How to recover from a refused run](#how-to-recover-from-a-refused-run) for the exceptions). Then the run marker, the token, the engine, the row floor (`row_floor.py --repo <mirror>`), and in `daily`/`full-comments` the changelog analysis from inside the mirror (`claude -p --safe-mode`, with `changelog-system-prompt.md` as the system prompt and `changelog-prompt.md` plus the reader context as the task; read-only tools, no timeout and no fallback model), a `CHANGELOG.md` index line, the commit, the digest. Every commit stages the engine's paths only (`tree_status.py --stage`). `rows` commits with no analysis, index line or digest, then writes the status marker from the run's own report.
 
 Refusals: the nightly modes route through `fail()` (a high-priority ntfy, exit 1). Rows mode routes through `guard_out`, which records `skipped` (a designed refusal: the lock, a dirty tree, a git operation in flight) or `failed` (anything else) in the marker and exits 1 silently — except a row-floor breach, which ntfys in every mode. A refused mirror resolution in rows mode writes no marker, since the marker lives under the root that did not resolve. A run killed by TERM/INT/HUP logs `FAIL: killed by SIG<name>`, exits 128+n, and leaves the run marker as it was; when a marker exists outside rows mode it tries a high-priority ntfy.
 
@@ -151,6 +150,7 @@ Refusals: the nightly modes route through `fail()` (a high-priority ntfy, exit 1
 | `merge_backfill.py`, `backfill_resolved_comments.py`, `repair_backfill_attribution.py` | Standalone comment-record writers over the capture log; each takes the writer lock. |
 | `capture_fixtures.py` | Renderer fixtures: `capture` (live, ~1 rps, read-only, strips signed-URL credentials, never overwrites), `synthetic` (`--force` rewrites every hand-authored entry), `expected` (re-renders the golden output), `trim`. |
 | `changelog-prompt.md` | The changelog-analysis prompt, addressed to a model running inside the mirror repository: it reads the run report, the staged diff, `../tasks/.sync/ls.md` when a task-tracking checkout sits around the mirror, and the appended reader context; ranks by the reader's lane, compresses the rest, flags mirror-health issues. |
+| `changelog-system-prompt.md` | The analysis call's own system prompt: unattended, read-only tools, and the note as the whole final message. `--safe-mode` keeps the user's CLAUDE.md and the rest of their session out of the call, so everything it knows about the reader comes from `changelog-prompt.md` and the appended reader context. |
 | `notion_walk.py` | The first build's page walker; `walker.py` cites it as the compatibility reference for the rendered form. |
 | `tests/` | Offline, stdlib `unittest`, zero API requests. `tests/README.md`. |
 
