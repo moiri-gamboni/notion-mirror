@@ -15,7 +15,8 @@
 # outer timeout and no fallback model.
 # The mirror is a git repository of its own (its .git beside workspace/), and
 # every git command here runs inside it. Failures ntfy loudly; a failed
-# analysis degrades to a stub note so the data commit still lands. No git
+# analysis degrades to a stub note so the data commit still lands, and ntfys
+# too (high priority, naming the reason) whatever the digest flags say. No git
 # push (set NOTION_REFRESH_PUSH=1 to enable).
 #
 # rows mode refreshes only the rows it is given (plus a props-probe drain) and
@@ -289,21 +290,38 @@ changelog_prompt() {
 # An unattended call carries nothing from the user's own sessions. --safe-mode drops
 # CLAUDE.md, hooks, skills, plugins and MCP servers (a plain `claude -p` loads the
 # user's CLAUDE.md and the rest from any directory) and keeps the subscription login,
-# which --bare would not (it forces an API key). The job brings its own system prompt. --permission-mode
-# dontAsk is what makes --allowedTools a limit: without it the list only pre-approves
-# those tools, and a Write or any other Bash command runs unasked. There is no timeout
-# and no fallback model on purpose: the call either finishes or fails, and a failure is
-# reported rather than papered over. The note goes to $2; success means a usable one.
+# which --bare would not (it forces an API key). The job brings its own system prompt.
+# --permission-mode dontAsk is what makes --allowedTools a limit: without it the list
+# only pre-approves those tools, and a Write or any other Bash command runs unasked.
+# There is no timeout and no fallback model on purpose: the call either finishes or
+# fails, and a failure is reported rather than papered over. The note goes to $2;
+# success means a usable one, and on failure ANALYSIS_FAIL holds a one-line reason.
+# claude reports its own errors (a usage limit, an unknown model, an API error) on
+# stdout with exit 1, so the reason is the first line of what it printed, not the
+# stderr log, which is shared by every run.
+first_line() { awk 'NF{print substr($0,1,300); exit}' "$@"; }
 run_changelog_model() {
-    local prompt="$1" out="$2"
+    local prompt="$1" out="$2" err rc
+    err="$(mktemp)"
     claude -p "$prompt" \
         --safe-mode --strict-mcp-config --no-session-persistence \
         --system-prompt "$(cat "$TOOLS/changelog-system-prompt.md")" \
         --model "$MODEL" --effort "$EFFORT" \
         --permission-mode dontAsk \
         --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)" \
-        < /dev/null > "$out" 2>>"${TMPDIR:-/tmp}/notion-mirror-claude.err" \
-        && [ -s "$out" ] && head -5 "$out" | grep -q "^#"
+        < /dev/null > "$out" 2> "$err"
+    rc=$?
+    cat "$err" >> "${TMPDIR:-/tmp}/notion-mirror-claude.err"
+    ANALYSIS_FAIL=""
+    if [ "$rc" -ne 0 ]; then
+        ANALYSIS_FAIL="claude exited $rc: $(first_line "$out" "$err")"
+    elif [ ! -s "$out" ]; then
+        ANALYSIS_FAIL="claude exited 0 and printed nothing"
+    elif ! head -5 "$out" | grep -q "^#"; then
+        ANALYSIS_FAIL="the output is not a note (no heading in its first lines): $(first_line "$out")"
+    fi
+    rm -f "$err"
+    [ -z "$ANALYSIS_FAIL" ]
 }
 
 # --- notify: send the deferred digest for the most recent run, then exit -----
@@ -459,7 +477,7 @@ the replacement note.")"
         exit 0
     fi
     rm -f "$NOTE.tmp"
-    fail "reanalysis produced no usable note (see ${TMPDIR:-/tmp}/notion-mirror-claude.err)"
+    fail "reanalysis of $SHA produced no usable note: $ANALYSIS_FAIL (stderr log: ${TMPDIR:-/tmp}/notion-mirror-claude.err)"
 fi
 
 # An inherited token wins, so a rehearsal can hand this its own credentials.
@@ -614,6 +632,7 @@ mkdir -p "$NDIR/_meta/changelog"
 # unhelpful notification is worse than the marginal usage of one call. If it
 # does fail (rate-limited, an API error), the stub fallback + `reanalyze <sha>` cover it.
 ANALYZED=0
+ANALYSIS_FAIL="the claude CLI is not on PATH"
 if command -v claude >/dev/null 2>&1; then
     say "running $MODEL changelog analysis"
     PROMPT="$(changelog_prompt "Run context: mode=$MODE, date=$DATE_UTC (UTC). The refresh's staged diff and
@@ -622,7 +641,7 @@ reports are in place; the summary line is: $SUMMARY")"
         mv "$NOTE.tmp" "$NOTE"
         ANALYZED=1
     else
-        say "analysis failed or produced no usable note — falling back to stub note"
+        say "analysis failed — falling back to stub note: $ANALYSIS_FAIL"
     fi
 fi
 if [ "$ANALYZED" != "1" ]; then
@@ -630,7 +649,9 @@ if [ "$ANALYZED" != "1" ]; then
     {
         echo "# Notion changes — $DATE_UTC ($MODE refresh)"
         echo
-        echo "_⚠ Automated analysis unavailable this run (claude -p failed or CLI missing). Raw refresh report below; re-run with \`refresh.sh reanalyze <sha>\` against this commit._"
+        echo "_⚠ Automated analysis unavailable this run. Raw refresh report below; re-run with \`refresh.sh reanalyze <sha>\` against this commit._"
+        echo
+        echo "Reason: $ANALYSIS_FAIL"
         echo
         cat "$STATE/last-run-report.md"
         # a stub note still gets a clearly-labelled ntfy (not masquerading as analysis)
@@ -672,6 +693,15 @@ if [ "${NOTION_REFRESH_PUSH:-0}" = "1" ]; then
     else
         say "push failed (non-fatal)"
     fi
+fi
+
+# --- stub alert ---------------------------------------------------------------
+# A stub note is a failure, not a quiet day, so it alerts whatever
+# NOTION_REFRESH_NTFY_DIGEST and NOTION_REFRESH_DEFER_NTFY say: a deployment that
+# reads the note itself would otherwise meet the stub only when it opens it.
+if [ "$ANALYZED" != "1" ]; then
+    ntfy high "Notion mirror: changelog analysis failed" "$ANALYSIS_FAIL
+A stub note holds the raw report ($REL). Regenerate it with: refresh.sh reanalyze $(git rev-parse --short HEAD)"
 fi
 
 # --- ntfy digest --------------------------------------------------------------

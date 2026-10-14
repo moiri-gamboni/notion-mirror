@@ -55,11 +55,23 @@ while [ $# -gt 0 ]; do
 done
 printf '%s' "$prompt" > "$CLAUDE_PROMPT_LOG"
 pwd -P > "$CLAUDE_PROMPT_LOG.cwd"
-printf '# stub note\\n'
+case "${CLAUDE_STUB_MODE:-note}" in
+    fail)    echo "You've hit your limit"; echo "second line" >&2; exit 1 ;;
+    failerr) echo "only stderr says why" >&2; exit 1 ;;
+    chatter) printf 'I could not read the diff.\\nSorry.\\n' ;;
+    empty)   ;;
+    *)       printf '# stub note\\n' ;;
+esac
 '''
 
 STUB_RECORDER = '''#!/usr/bin/env bash
 exit 0
+'''
+
+# One ntfy call per record: arguments joined by \x1f, records ended by \x1e.
+STUB_CURL = '''#!/usr/bin/env bash
+printf '%s\\x1f' "$@" >> "$CLAUDE_PROMPT_LOG.curl"
+printf '\\x1e' >> "$CLAUDE_PROMPT_LOG.curl"
 '''
 
 
@@ -89,8 +101,8 @@ class Sandbox(unittest.TestCase):
                      "changelog-system-prompt.md", "mirror_root.py", "tree_status.py"):
             shutil.copy(os.path.join(TOOLS, name), os.path.join(self.tools, name))
         write_exec(os.path.join(self.bin, "claude"), STUB_CLAUDE)
-        for name in ("curl", "logger"):
-            write_exec(os.path.join(self.bin, name), STUB_RECORDER)
+        write_exec(os.path.join(self.bin, "curl"), STUB_CURL)
+        write_exec(os.path.join(self.bin, "logger"), STUB_RECORDER)
         with open(os.path.join(self.config, ".claude.json"), "w") as f:
             json.dump({"mcpServers": {"notion": {"env": {"NOTION_TOKEN": "t"}}}}, f)
         self.prompt_log = os.path.join(self.tmp, "prompt")
@@ -113,8 +125,8 @@ class Sandbox(unittest.TestCase):
         subprocess.run(("git", "-C", self.ndir) + args, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    def run_refresh(self, *args, context=False):
-        env = dict(os.environ, NOTION_MIRROR=self.ndir, NOTION_MIRROR_TOOLS=self.tools,
+    def run_refresh(self, *args, context=False, **extra_env):
+        env = dict(os.environ, **extra_env, NOTION_MIRROR=self.ndir, NOTION_MIRROR_TOOLS=self.tools,
                    HOME=self.home, CLAUDE_CONFIG_DIR=self.config,
                    PATH=self.bin + os.pathsep + os.environ["PATH"],
                    CLAUDE_PROMPT_LOG=self.prompt_log,
@@ -129,6 +141,15 @@ class Sandbox(unittest.TestCase):
     def prompt(self):
         with open(self.prompt_log) as f:
             return f.read()
+
+    def ntfy_calls(self):
+        """Each phone notification sent, as the argument list of its curl call."""
+        path = self.prompt_log + ".curl"
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            records = f.read().split("\x1e")[:-1]
+        return [r.split("\x1f")[:-1] for r in records]
 
     def claude_argv(self):
         with open(self.prompt_log + ".argv") as f:
@@ -209,6 +230,71 @@ class ModelCallIsIsolated(Sandbox):
         res = self.run_refresh("reanalyze", sha)
         self.assertEqual(res.returncode, 0, res.stdout)
         self.check_argv(self.claude_argv())
+
+
+class StubAlert(Sandbox):
+    """The analysis is the point of the nightly. When it fails, the data commit still lands
+    behind a stub note, and the phone is told why — whether or not the deployment sends
+    digests (the nightly unit runs with NOTION_REFRESH_NTFY_DIGEST=0 because the note is
+    read directly, which is exactly where a stub would otherwise go unnoticed)."""
+
+    def alerts(self):
+        return [c for c in self.ntfy_calls() if "Title: Notion mirror: changelog analysis failed" in c]
+
+    def head_sha(self):
+        return subprocess.run(("git", "-C", self.ndir, "rev-parse", "--short", "HEAD"),
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    def todays_note(self):
+        notes = os.listdir(os.path.join(self.ndir, "_meta", "changelog"))
+        self.assertEqual(len(notes), 1, notes)
+        with open(os.path.join(self.ndir, "_meta", "changelog", notes[0])) as f:
+            return f.read()
+
+    def test_a_failed_call_alerts_with_its_reason_though_digests_are_off(self):
+        res = self.run_refresh("daily", CLAUDE_STUB_MODE="fail", NOTION_REFRESH_NTFY_DIGEST="0")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        [call] = self.alerts()
+        self.assertIn("Priority: high", call)
+        body = call[call.index("-d") + 1]
+        self.assertIn("claude exited 1: You've hit your limit", body)
+        self.assertIn(f"refresh.sh reanalyze {self.head_sha()}", body)
+        self.assertEqual(len(self.ntfy_calls()), 1, "digests are off: the alert is the only notification")
+        note = self.todays_note()
+        self.assertIn("Automated analysis unavailable", note)
+        self.assertIn("claude exited 1: You've hit your limit", note)
+
+    def test_the_reason_falls_back_to_stderr_when_stdout_is_empty(self):
+        res = self.run_refresh("daily", CLAUDE_STUB_MODE="failerr", NOTION_REFRESH_NTFY_DIGEST="0")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        [call] = self.alerts()
+        self.assertIn("claude exited 1: only stderr says why", call[call.index("-d") + 1])
+
+    def test_output_that_is_not_a_note_alerts_with_its_first_line(self):
+        res = self.run_refresh("daily", CLAUDE_STUB_MODE="chatter", NOTION_REFRESH_NTFY_DIGEST="0")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        [call] = self.alerts()
+        self.assertIn("not a note", call[call.index("-d") + 1])
+        self.assertIn("I could not read the diff.", call[call.index("-d") + 1])
+
+    def test_empty_output_alerts(self):
+        res = self.run_refresh("daily", CLAUDE_STUB_MODE="empty", NOTION_REFRESH_NTFY_DIGEST="0")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        [call] = self.alerts()
+        self.assertIn("printed nothing", call[call.index("-d") + 1])
+
+    def test_a_good_note_sends_no_alert_and_digests_off_means_silence(self):
+        res = self.run_refresh("daily", NOTION_REFRESH_NTFY_DIGEST="0")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.ntfy_calls(), [])
+
+    def test_reanalyze_failure_names_the_reason(self):
+        sha = self.seed_reanalyze_note()
+        res = self.run_refresh("reanalyze", sha, CLAUDE_STUB_MODE="fail")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        [call] = self.ntfy_calls()
+        self.assertIn("Priority: high", call)
+        self.assertIn("claude exited 1: You've hit your limit", call[call.index("-d") + 1])
 
 
 class MirrorRepoIsTheCwd(Sandbox):
