@@ -432,16 +432,19 @@ class PropertyRoundTripFuzz(unittest.TestCase):
     precedence bug lived there: the mention scan ran ahead of the parser and
     split the string at every id, so any span containing one lost its markers
     to literal text. What is asserted here is what the property path *can*
-    promise: every span survives, and a mention appears only where the text
-    was plain and outside a bare URL. A mention itself does not round-trip — Notion returns it as its
-    page title — so the generator keeps ids out of styled runs and the
-    comparison treats a mention as its id.
+    promise: every span survives, a mention appears only where the text was
+    plain and outside a bare URL, and a bare URL in plain text becomes a link
+    to itself (and only there). A mention itself does not round-trip — Notion
+    returns it as its page title — so the generator keeps ids out of styled
+    runs and the comparison treats a mention as its id.
     """
 
     PAGE_ID = "3a000000000000000000000000000000"
     URL_ID = "3b000000000000000000000000000000"
     URL_ID_DASHED = "3b000000-0000-0000-0000-000000000000"
     URL_PREFIX = "https://www.notion.so/p/Quarterly-plan-"
+    BARE_URL = "https://example.test/a_b/c?x=1&y=2"
+    URL_TAILS = ("", ".", ",", ";", ":", "!", "?", "?!", ").", ")")
 
     def _mentions(self, items):
         return [i["mention"]["page"]["id"] for i in items if i.get("type") == "mention"]
@@ -454,10 +457,17 @@ class PropertyRoundTripFuzz(unittest.TestCase):
                 continue
             annots = frozenset(k for k, v in (it.get("annotations") or {}).items() if v)
             href = ((it.get("text") or {}).get("link") or {}).get("url")
+            if not annots and href == (it.get("text") or {}).get("content"):
+                href = None     # a bare URL linked to itself is styling-wise plain text
             for ch in (it.get("text") or {}).get("content", ""):
                 if not ch.isspace():
                     out.append((ch, annots, href))
         return out
+
+    @staticmethod
+    def _is_plain(item):
+        return (not item.get("annotations")
+                and not (item["text"].get("link") or {}).get("url"))
 
     def test_random_property_values_keep_their_spans(self):
         """Two independent claims, neither of them a re-implementation of the
@@ -473,9 +483,17 @@ class PropertyRoundTripFuzz(unittest.TestCase):
             if rng.random() < 0.5:
                 where = int(rng.random() * len(items))
                 items[where]["text"]["content"] += f" {self.PAGE_ID} "
+            urls = []
             if rng.random() < 0.5:
                 where = int(rng.random() * len(items))
                 items[where]["text"]["content"] += f" ({self.URL_PREFIX}{self.URL_ID}) "
+                urls.append((where, f"{self.URL_PREFIX}{self.URL_ID}"))
+            for _ in range(int(rng.random() * 3)):
+                where = int(rng.random() * len(items))
+                tail = rng.choice(self.URL_TAILS)
+                items[where]["text"]["content"] += f" {self.BARE_URL}{tail} "
+                urls.append((where, self.BARE_URL))
+            want_links = sorted(url for where, url in urls if self._is_plain(items[where]))
             items = mb._merge_runs(items)
             md = rich_md(_as_read_back(items))
             try:
@@ -485,6 +503,17 @@ class PropertyRoundTripFuzz(unittest.TestCase):
                 continue
             if self.URL_ID_DASHED in self._mentions(got):
                 failures.append(f"case {case} id inside a bare URL became a mention md={md!r}")
+                continue
+            got_links = sorted(i["text"]["content"] for i in got
+                               if i.get("type") == "text" and not i.get("annotations")
+                               and i["text"].get("link") == {"url": i["text"]["content"]})
+            if got_links != want_links:
+                failures.append(f"case {case} bare URLs linked wrongly md={md!r}\n"
+                                f"  want={want_links!r}\n  got={got_links!r}")
+                continue
+            if any("http" in i["text"]["content"] for i in got
+                   if i.get("type") == "text" and self._is_plain(i)):
+                failures.append(f"case {case} a bare URL was left unlinked md={md!r}")
                 continue
             styled_want = [c for c in self._signature(_as_read_back(items))
                            if c[1] or c[2]]
@@ -530,8 +559,16 @@ class PropertyRoundTripFuzz(unittest.TestCase):
         self.assertEqual(f"https://notion.so/{self.PAGE_ID}",
                          got[1]["text"]["link"]["url"])
 
+    def _links(self, items):
+        """[(content, link target)] of the text items that carry a link."""
+        return [(i["text"]["content"], i["text"]["link"]["url"]) for i in items
+                if i.get("type") == "text" and (i["text"].get("link") or {}).get("url")]
+
+    def _text(self, items):
+        return "".join(i["text"]["content"] for i in items if i.get("type") == "text")
+
     def test_an_id_in_a_bare_url_stays_part_of_it(self):
-        """A pasted page URL is text. Promoting its id split the URL into a dead
+        """A pasted page URL is one link. Promoting its id split the URL into a dead
         fragment, a page chip and a stray `)`."""
         for url in (f"https://app.notion.com/p/Quarterly-plan-{self.PAGE_ID}",
                     f"https://app.notion.com/p/{self.PAGE_ID}",
@@ -540,22 +577,87 @@ class PropertyRoundTripFuzz(unittest.TestCase):
             for md in (f"merged into \"Quarterly plan\" ({url})",
                        f"merged into {url}, and",
                        f"merged into\n{url}\nand"):
-                self.assertEqual(mb.inline_md(md), mb.prop_rich(md), md)
+                got = mb.prop_rich(md)
+                self.assertEqual([], self._mentions(got), md)
+                self.assertEqual([(url, url)], self._links(got), md)
+                self.assertEqual(md, self._text(got), md)
+
+    def test_a_bare_url_becomes_a_link_of_its_own(self):
+        """Notion does not link text it receives through the API, so a URL that
+        arrived as plain text could not be clicked."""
+        url = "https://example.test/a/b?x=1&y=2#frag"
+        got = mb.prop_rich(f"see {url} now")
+        self.assertEqual(["see ", url, " now"], [i["text"]["content"] for i in got])
+        self.assertEqual([(url, url)], self._links(got))
+        self.assertFalse([i for i in got if i.get("annotations")])
+
+    def test_trailing_sentence_punctuation_stays_outside_the_link(self):
+        url = "https://example.test/a/b"
+        for tail in (".", ",", ";", ":", "!", "?", "?!", "...", ".)"):
+            got = mb.prop_rich(f"see {url}{tail}")
+            self.assertEqual([(url, url)], self._links(got), tail)
+            self.assertEqual(f"see {url}{tail}", self._text(got), tail)
+        got = mb.prop_rich(f"({url}), then {url}.")
+        self.assertEqual([(url, url)] * 2, self._links(got))
+        self.assertEqual(f"({url}), then {url}.", self._text(got))
+
+    def test_punctuation_inside_a_url_stays_in_it(self):
+        for url in ("https://example.test/a.b/c,d;e:f!g?h=1",
+                    "https://example.test/a-b_c~d%20e+f",
+                    "http://localhost:8405/x"):
+            self.assertEqual([(url, url)], self._links(mb.prop_rich(f"see {url} now")), url)
+
+    def test_two_urls_are_two_links(self):
+        a, b = "https://example.test/a", "http://example.test/b"
+        got = mb.prop_rich(f"{a}\n{b} and ({a})")
+        self.assertEqual([(a, a), (b, b), (a, a)], self._links(got))
+        self.assertEqual(f"{a}\n{b} and ({a})", self._text(got))
+
+    def test_a_url_beside_a_mention_is_a_link_and_the_id_a_mention(self):
+        url = f"https://example.test/p/Plan-{self.URL_ID}"
+        got = mb.prop_rich(f"{self.PAGE_ID} then {url}")
+        self.assertEqual(["3a000000-0000-0000-0000-000000000000"], self._mentions(got))
+        self.assertEqual([(url, url)], self._links(got))
+
+    def test_a_markdown_link_a_code_span_and_a_styled_run_are_unchanged(self):
+        """Only bare URLs in plain text are linked: a label that is itself a URL
+        keeps its own target, and a URL that is code or part of a bold run is
+        content."""
+        for md in ("[https://example.test/a](https://example.test/b)",
+                   "[the page](https://example.test/a) and more",
+                   "`https://example.test/a` is the host",
+                   "**see https://example.test/a now**",
+                   "*https://example.test/a*"):
+            self.assertEqual(mb.inline_md(md), mb.prop_rich(md), md)
+
+    def test_text_that_is_not_a_whole_url_stays_text(self):
+        """A placeholder is no link target, and the write would be refused for it; a
+        URL with a `(` in it is cut at the `)` that closes it, so what is left is a
+        different address from the one written."""
+        for md in ("the https:// prefix", "https://.", "see http://<host>/x now",
+                   "see https://example.test/wiki/Foo_(bar) now",
+                   "(see https://example.test/wiki/Foo_(bar))",
+                   '"https://example.test/a"', "https://example.test/a|b",
+                   f"see https://example.test/{'a' * 1990}"):
+            self.assertEqual(mb.inline_md(md), mb.prop_rich(md), md)
 
     def test_a_bare_id_beside_a_url_is_still_promoted(self):
         url = f"https://www.notion.so/p/Quarterly-plan-{self.URL_ID}"
         got = mb.prop_rich(f"({url}) and {self.PAGE_ID} later")
         self.assertEqual(["3a000000-0000-0000-0000-000000000000"], self._mentions(got))
-        self.assertEqual([f"({url}) and ", " later"],
+        self.assertEqual(["(", url, ") and ", " later"],
                          [i["text"]["content"] for i in got if i["type"] == "text"])
+        self.assertEqual([(url, url)], self._links(got))
 
     def test_a_url_split_across_a_chunk_boundary_stays_whole(self):
         """`rich` cuts a long run every 1990 characters; the id can land in the
         chunk after the one that holds `https://`."""
+        url = f"{self.URL_PREFIX}{self.PAGE_ID}"
         for pad in range(1950, 1990):
-            md = f"{'x' * pad} ({self.URL_PREFIX}{self.PAGE_ID})"
+            md = f"{'x' * pad} ({url})"
             got = mb.prop_rich(md)
             self.assertEqual([], self._mentions(got), pad)
+            self.assertEqual([(url, url)], self._links(got), pad)
             self.assertEqual(md, "".join(i["text"]["content"] for i in got), pad)
 
     def test_a_bare_id_cut_by_a_chunk_boundary_is_still_promoted(self):

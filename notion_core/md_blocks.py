@@ -169,9 +169,13 @@ def unescape_md(text):
     return _UNESCAPE_RE.sub(r"\1", text)
 
 
+#: Notion takes 2000 characters per text item; a margin is left.
+RICH_CHUNK = 1990
+
+
 def rich(text, annotations=(), link=None):
     out = []
-    for chunk in (text[i:i+1990] for i in range(0, len(text), 1990)):
+    for chunk in (text[i:i+RICH_CHUNK] for i in range(0, len(text), RICH_CHUNK)):
         t = {"type": "text", "text": {"content": chunk}}
         if link: t["text"]["link"] = {"url": link}
         if annotations: t["annotations"] = {a: True for a in annotations}
@@ -506,7 +510,7 @@ def _merge_runs(runs):
                 and prev.get("type") == "text"
                 and run.get("annotations") == prev.get("annotations")
                 and run["text"].get("link") == prev["text"].get("link")
-                and len(prev["text"]["content"]) + len(run["text"]["content"]) <= 1990):
+                and len(prev["text"]["content"]) + len(run["text"]["content"]) <= RICH_CHUNK):
             prev["text"]["content"] += run["text"]["content"]
             continue
         out.append(run)
@@ -1226,6 +1230,13 @@ UUID_RE = re.compile(r'\b([0-9a-f]{8})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{
 #: a URL wrapped in `(…)` ends. Tried before the id alternative, so an id inside one is
 #: consumed with it and never reported on its own.
 _URL_OR_ID_RE = re.compile(r"https?://[^\s)]*|" + UUID_RE.pattern)
+#: Punctuation after a URL ends the sentence, not the address.
+_URL_TRAILING = ".,;:!?"
+#: A URL the write can carry as a link target: a host after the scheme and none of the
+#: characters a URL cannot hold, so a placeholder like `http://<host>/x` stays text
+#: instead of failing the request. `(` is out too: a token holding one was cut at the
+#: `)` that closes it (`…/Foo_(bar)`), and linking the part before it points elsewhere.
+_LINKABLE_URL_RE = re.compile(r"https?://[^\s<>\"{}|\\^`/?#()]+[^\s<>\"{}|\\^`()]*")
 
 
 def _is_plain_text(item):
@@ -1234,21 +1245,37 @@ def _is_plain_text(item):
                 and not text.get("link") and text.get("content"))
 
 
+def _link_target(token):
+    """The link a bare-URL ``token`` carries, or ``None`` when it is not one: trailing
+    sentence punctuation dropped, and a URL too long for one text item left as text
+    rather than cut into pieces that each link to the whole."""
+    url = token.rstrip(_URL_TRAILING)
+    if len(url) <= RICH_CHUNK and _LINKABLE_URL_RE.fullmatch(url):
+        return url
+    return None
+
+
 def _promote_ids(items):
-    """`items` (adjacent unannotated, unlinked text) with each bare page id outside a
-    URL turned into a mention. The run is scanned whole because `rich` cuts a long
-    one every 1990 characters, and a URL or an id can start in one piece and end in
-    the next."""
+    """`items` (adjacent unannotated, unlinked text) with each bare web URL made a link
+    and each bare page id outside a URL turned into a mention. The run is scanned whole
+    because `rich` cuts a long one every `RICH_CHUNK` characters, and a URL or an id can
+    start in one piece and end in the next."""
     content = "".join(i["text"]["content"] for i in items)
     out, pos = [], 0
     for m in _URL_OR_ID_RE.finditer(content):
-        if m.group(1) is None:      # a URL, stepped over with any id inside it
-            continue
-        if m.start() > pos:
-            out += rich(content[pos:m.start()])
-        out.append({"type": "mention", "mention": {
-            "page": {"id": "-".join(m.group(i) for i in range(1, 6))}}})
-        pos = m.end()
+        if m.group(1) is None:      # a URL: linked, or stepped over with any id inside it
+            url = _link_target(m.group())
+            if url is None:
+                continue
+            start, end, found = m.start(), m.start() + len(url), rich(url, link=url)
+        else:
+            start, end = m.span()
+            found = [{"type": "mention", "mention": {
+                "page": {"id": "-".join(m.group(i) for i in range(1, 6))}}}]
+        if start > pos:
+            out += rich(content[pos:start])
+        out += found
+        pos = end
     if not pos:
         return items
     return out + rich(content[pos:])
@@ -1274,10 +1301,14 @@ def prop_rich(text):
     recover. That asymmetry is the price of the live chip, and it is why the promotion
     is kept as narrow as it can be.
 
-    An id inside a bare URL (`https://…/Some-title-<id>`) is part of the address and
-    stays text: a chip would cut the URL in two and read back as the page's title
-    where the address was written. The body parser links no bare URL either, so a URL
-    is plain text on both paths.
+    A bare `http(s)://` URL in plain text is sent as a link to itself: Notion does not
+    link text it receives through the API, so it would show in full and not click. The
+    link target is the URL as written, without the sentence punctuation (`.,;:!?`) that
+    may follow it, and its text is the same string, so it reads back as the URL it was.
+    An id inside one (`https://…/Some-title-<id>`) is part of the address and stays in
+    it: a chip would cut the URL in two and read back as the page's title where the
+    address was written. A URL in a code span, a styled run or a markdown link's label
+    is content there and is left alone. The body parser links no bare URL.
     """
     out = []
     for plain, group in itertools.groupby(inline_md(text), _is_plain_text):
