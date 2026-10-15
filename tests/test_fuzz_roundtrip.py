@@ -433,12 +433,18 @@ class PropertyRoundTripFuzz(unittest.TestCase):
     split the string at every id, so any span containing one lost its markers
     to literal text. What is asserted here is what the property path *can*
     promise: every span survives, and a mention appears only where the text
-    was plain. A mention itself does not round-trip — Notion returns it as its
+    was plain and outside a bare URL. A mention itself does not round-trip — Notion returns it as its
     page title — so the generator keeps ids out of styled runs and the
     comparison treats a mention as its id.
     """
 
     PAGE_ID = "3a000000000000000000000000000000"
+    URL_ID = "3b000000000000000000000000000000"
+    URL_ID_DASHED = "3b000000-0000-0000-0000-000000000000"
+    URL_PREFIX = "https://www.notion.so/p/Quarterly-plan-"
+
+    def _mentions(self, items):
+        return [i["mention"]["page"]["id"] for i in items if i.get("type") == "mention"]
 
     def _signature(self, items):
         out = []
@@ -467,12 +473,18 @@ class PropertyRoundTripFuzz(unittest.TestCase):
             if rng.random() < 0.5:
                 where = int(rng.random() * len(items))
                 items[where]["text"]["content"] += f" {self.PAGE_ID} "
+            if rng.random() < 0.5:
+                where = int(rng.random() * len(items))
+                items[where]["text"]["content"] += f" ({self.URL_PREFIX}{self.URL_ID}) "
             items = mb._merge_runs(items)
             md = rich_md(_as_read_back(items))
             try:
                 got = mb.prop_rich(md)
             except Exception as e:  # noqa: BLE001 — any throw is the finding
                 failures.append(f"case {case} md={md!r} threw {e!r}")
+                continue
+            if self.URL_ID_DASHED in self._mentions(got):
+                failures.append(f"case {case} id inside a bare URL became a mention md={md!r}")
                 continue
             styled_want = [c for c in self._signature(_as_read_back(items))
                            if c[1] or c[2]]
@@ -517,6 +529,46 @@ class PropertyRoundTripFuzz(unittest.TestCase):
         self.assertEqual([], [i for i in got if i.get("type") == "mention"])
         self.assertEqual(f"https://notion.so/{self.PAGE_ID}",
                          got[1]["text"]["link"]["url"])
+
+    def test_an_id_in_a_bare_url_stays_part_of_it(self):
+        """A pasted page URL is text. Promoting its id split the URL into a dead
+        fragment, a page chip and a stray `)`."""
+        for url in (f"https://app.notion.com/p/Quarterly-plan-{self.PAGE_ID}",
+                    f"https://app.notion.com/p/{self.PAGE_ID}",
+                    f"http://www.notion.so/{self.PAGE_ID}?pvs=4",
+                    f"https://www.notion.so/ws/db?v={self.PAGE_ID}&p=1"):
+            for md in (f"merged into \"Quarterly plan\" ({url})",
+                       f"merged into {url}, and",
+                       f"merged into\n{url}\nand"):
+                self.assertEqual(mb.inline_md(md), mb.prop_rich(md), md)
+
+    def test_a_bare_id_beside_a_url_is_still_promoted(self):
+        url = f"https://www.notion.so/p/Quarterly-plan-{self.URL_ID}"
+        got = mb.prop_rich(f"({url}) and {self.PAGE_ID} later")
+        self.assertEqual(["3a000000-0000-0000-0000-000000000000"], self._mentions(got))
+        self.assertEqual([f"({url}) and ", " later"],
+                         [i["text"]["content"] for i in got if i["type"] == "text"])
+
+    def test_a_url_split_across_a_chunk_boundary_stays_whole(self):
+        """`rich` cuts a long run every 1990 characters; the id can land in the
+        chunk after the one that holds `https://`."""
+        for pad in range(1950, 1990):
+            md = f"{'x' * pad} ({self.URL_PREFIX}{self.PAGE_ID})"
+            got = mb.prop_rich(md)
+            self.assertEqual([], self._mentions(got), pad)
+            self.assertEqual(md, "".join(i["text"]["content"] for i in got), pad)
+
+    def test_a_bare_id_cut_by_a_chunk_boundary_is_still_promoted(self):
+        md = f"{'x' * 1980} {self.PAGE_ID} tail"
+        self.assertEqual(["3a000000-0000-0000-0000-000000000000"],
+                         self._mentions(mb.prop_rich(md)))
+
+    def test_an_id_after_a_url_has_ended_is_promoted(self):
+        for md in (f"https://www.notion.so/p/x) {self.PAGE_ID}",
+                   f"https://www.notion.so/p/x {self.PAGE_ID}",
+                   f"see https://www.notion.so/p/x\n{self.PAGE_ID}"):
+            self.assertEqual(["3a000000-0000-0000-0000-000000000000"],
+                             self._mentions(mb.prop_rich(md)), md)
 
 
 class RoundTripRegressions(unittest.TestCase):

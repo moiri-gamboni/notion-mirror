@@ -105,6 +105,7 @@ cannot resolve: `*"a 'slug*' b"*` closes the emphasis at `slug`, in this parser 
 in every CommonMark one. It stops mattering once a body has been pulled, because
 the renderer escapes a literal marker on the way out.
 """
+import itertools
 import re
 import unicodedata
 
@@ -1221,6 +1222,36 @@ def md_blocks(md, max_nesting=MAX_NESTING):
 
 
 UUID_RE = re.compile(r'\b([0-9a-f]{8})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{12})\b')
+#: A bare web URL runs from its scheme to whitespace or the first `)`, which is where
+#: a URL wrapped in `(…)` ends. Tried before the id alternative, so an id inside one is
+#: consumed with it and never reported on its own.
+_URL_OR_ID_RE = re.compile(r"https?://[^\s)]*|" + UUID_RE.pattern)
+
+
+def _is_plain_text(item):
+    text = item.get("text") or {}
+    return bool(item.get("type") == "text" and not item.get("annotations")
+                and not text.get("link") and text.get("content"))
+
+
+def _promote_ids(items):
+    """`items` (adjacent unannotated, unlinked text) with each bare page id outside a
+    URL turned into a mention. The run is scanned whole because `rich` cuts a long
+    one every 1990 characters, and a URL or an id can start in one piece and end in
+    the next."""
+    content = "".join(i["text"]["content"] for i in items)
+    out, pos = [], 0
+    for m in _URL_OR_ID_RE.finditer(content):
+        if m.group(1) is None:      # a URL, stepped over with any id inside it
+            continue
+        if m.start() > pos:
+            out += rich(content[pos:m.start()])
+        out.append({"type": "mention", "mention": {
+            "page": {"id": "-".join(m.group(i) for i in range(1, 6))}}})
+        pos = m.end()
+    if not pos:
+        return items
+    return out + rich(content[pos:])
 
 
 def prop_rich(text):
@@ -1242,24 +1273,13 @@ def prop_rich(text):
     because a mention comes back from Notion as its page *title*, with no id to
     recover. That asymmetry is the price of the live chip, and it is why the promotion
     is kept as narrow as it can be.
+
+    An id inside a bare URL (`https://…/Some-title-<id>`) is part of the address and
+    stays text: a chip would cut the URL in two and read back as the page's title
+    where the address was written. The body parser links no bare URL either, so a URL
+    is plain text on both paths.
     """
     out = []
-    for item in inline_md(text):
-        content = (item.get("text") or {}).get("content")
-        if (item.get("type") != "text" or item.get("annotations")
-                or (item.get("text") or {}).get("link") or not content):
-            out.append(item)
-            continue
-        pos = 0
-        for m in UUID_RE.finditer(content):
-            if m.start() > pos:
-                out += rich(content[pos:m.start()])
-            out.append({"type": "mention", "mention": {
-                "page": {"id": "-".join(m.group(i) for i in range(1, 6))}}})
-            pos = m.end()
-        if pos:
-            if pos < len(content):
-                out += rich(content[pos:])
-        else:
-            out.append(item)
-    return out or inline_md(text)
+    for plain, group in itertools.groupby(inline_md(text), _is_plain_text):
+        out += _promote_ids(list(group)) if plain else group
+    return out
